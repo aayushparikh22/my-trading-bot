@@ -153,21 +153,21 @@ RETEST_ZONE_PCT = 0.08         # Retest zone width around trigger (percent)
 MAX_TRADES_PER_SYMBOL = 999    # Unlimited trades per symbol per day
 MAX_TRADES_PER_DAY_PORTFOLIO = 999  # Unlimited total trades per day
 
-# 8. Optimized Partial Booking - AGGRESSIVE FAST PROFIT TAKING
+# 8. Optimized Partial Booking - AGGRESSIVE PROFIT LOCKING AT 1R
 USE_PARTIAL_BOOKING = True     # Enable advanced exit logic
-# CORRECT STRATEGY:
-# At 0.5R: Sell 50% of holdings (lock quick profit)
-# At 1R: Sell 25% more (SL already at entry = remaining 25% is FREE)
-# At market close (3:25 PM): Exit remaining 25%
+# AGGRESSIVE STRATEGY (Optimized for fast profit booking):
+# At 0.5R: Sell 25% of holdings (take quick profit)
+# At 1R: Sell 50% more (lock major portion at ideal 1:1 risk/reward)
+# At market close (3:25 PM): Exit remaining 25% (let it run for 2R potential)
 # Risk is set at 50% of original distance for tighter stops
 PARTIAL_BOOKING_1R_ACTION = "breakeven"  # Move SL to entry at 1R
 
-# FIRST TARGET: 0.5R (Quick Profit - SELL 50%)
-PARTIAL_BOOKING_FIRST_CLOSE_PCT = 0.50   # Close 50% at 0.5R (lock quick profit)
+# FIRST TARGET: 0.5R (Quick Profit - SELL 25%)
+PARTIAL_BOOKING_FIRST_CLOSE_PCT = 0.25   # Close 25% at 0.5R (quick profit)
 PARTIAL_BOOKING_FIRST_TARGET_R = 0.5     # First target at 0.5R
 
-# SECOND TARGET: 1R (Main Target - SELL 25%, SL moves to entry)
-PARTIAL_BOOKING_SECOND_CLOSE_PCT = 0.25  # Close 25% at 1R (remaining 25% is now FREE)
+# SECOND TARGET: 1R (Main Target - SELL 50%, SL moves to entry)
+PARTIAL_BOOKING_SECOND_CLOSE_PCT = 0.50  # Close 50% at 1R (lock majority at ideal risk/reward)
 PARTIAL_BOOKING_SECOND_TARGET_R = 1.0    # Second target at 1R
 
 # MARKET CLOSE: Exit remaining 25%

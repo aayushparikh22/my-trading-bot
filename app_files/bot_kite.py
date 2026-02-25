@@ -1218,16 +1218,16 @@ class KiteApp:
         base_risk = abs(entry_price - sl_price)
         
         logger.info(f"")
-        logger.info(f"🎯 THREE-STAGE EXIT STRATEGY for {selected_symbol}:")
+        logger.info(f"🎯 THREE-STAGE AGGRESSIVE EXIT STRATEGY for {selected_symbol}:")
         if config.USE_PARTIAL_BOOKING and target_price:
             logger.info(f"   STAGE 1 @ 0.5R ({first_close_pct*100:.0f}% qty): ₹{target_price:.2f}")
-            logger.info(f"            └─→ Lock profit + Move SL to entry (remaining is GUARANTEED)")
+            logger.info(f"            └─→ Take quick profit (SL still tight, remaining protected)")
             if second_target_price:
                 logger.info(f"   STAGE 2 @ 1.0R ({second_close_pct*100:.0f}% qty): ₹{second_target_price:.2f}")
-                logger.info(f"            └─→ Exit more, remaining still protected at entry SL")
+                logger.info(f"            └─→ Lock majority at ideal 1:1 risk/reward + Move SL to entry (final 25% GUARANTEED)")
             if eod_target_price:
                 logger.info(f"   STAGE 3 @ 2.0R ({eod_close_pct*100:.0f}% qty): ₹{eod_target_price:.2f}")
-                logger.info(f"            └─→ Final exit OR auto-exit at 3:25 PM")
+                logger.info(f"            └─→ Final 25% exit OR auto-exit at 3:25 PM (potential 2R gain)")
         elif target_price:
             logger.info(f"   Profit Target: ₹{target_price:.2f}")
         logger.info(f"   Initial Stoploss (TIGHT): ₹{sl_price:.2f} (50% closer to entry)")
@@ -1332,13 +1332,13 @@ class KiteApp:
                         if new_sl_id:
                             self.sl_order_id = new_sl_id
                     
-                    # Target 1: Close 50% at 0.5R (LOCK QUICK PROFIT)
+                    # Target 1: Close 25% at 0.5R (QUICK PROFIT TAKING)
                     current_quantity = self.remaining_quantity if self.remaining_quantity else quantity
                     if (not first_partial_booked and target_price and first_close_qty > 0 and current_quantity > 1 and
                         ((entry_side == "BUY" and price >= target_price) or (entry_side == "SELL" and price <= target_price))):
                         close_qty = min(first_close_qty, max(current_quantity - 1, 0))
                         if close_qty > 0:
-                            logger.info(f"🎯 TARGET 1 @ 0.5R HIT! Closing {close_qty} shares ({first_close_pct*100:.0f}%) at ₹{price:.2f} - LOCK QUICK PROFIT")
+                            logger.info(f"🎯 TARGET 1 @ 0.5R HIT! Closing {close_qty} shares ({first_close_pct*100:.0f}%) at ₹{price:.2f} - QUICK PROFIT")
                             exit_order = self.close_position(selected_symbol, close_qty, price)
                             if exit_order:
                                 partial_pnl = (price - entry_price) * close_qty if entry_side == "BUY" else (entry_price - price) * close_qty
@@ -1347,12 +1347,9 @@ class KiteApp:
                                 first_partial_booked = True
                                 self.remaining_quantity = current_quantity - close_qty
                                 
-                                # 🔒 LOCK REMAINING PROFIT: Move SL to entry price - remaining 50% is now GUARANTEED
-                                old_sl = sl_price
-                                sl_price = entry_price
-                                self.sl_moved_to_breakeven = True
-                                logger.info(f"🔒 SL MOVED TO ENTRY PRICE! Remaining {self.remaining_quantity} shares are now GUARANTEED PROFIT")
-                                logger.info(f"   Old SL: ₹{old_sl:.2f} → New SL: ₹{sl_price:.2f}")
+                                # Remaining 75% still has tight SL, will move to entry at 1R target
+                                logger.info(f"   Remaining {self.remaining_quantity} shares ({(self.remaining_quantity/initial_quantity)*100:.0f}%) still running with SL at ₹{sl_price:.2f}")
+                                logger.info(f"   Next stage: Move SL to entry at 1.0R target")
                                 
                                 # Update stoploss order on exchange
                                 new_sl_id = self.place_stoploss_order(selected_symbol, entry_side, self.remaining_quantity, sl_price)
@@ -1370,13 +1367,13 @@ class KiteApp:
                                         pnl=realized_pnl
                                     )
 
-                    # Target 2: Close 25% at 1.0R (FINAL PARTIAL EXIT - REMAINING 25% STILL HAS SL AT ENTRY)
+                    # Target 2: Close 50% at 1.0R (MAIN EXIT - LOCK MAJORITY AT IDEAL 1:1 RISK/REWARD)
                     current_quantity = self.remaining_quantity if self.remaining_quantity else quantity
                     if (first_partial_booked and not second_partial_booked and second_target_price and second_close_qty > 0 and current_quantity > 1 and
                         ((entry_side == "BUY" and price >= second_target_price) or (entry_side == "SELL" and price <= second_target_price))):
                         close_qty = min(second_close_qty, max(current_quantity - 1, 0))
                         if close_qty > 0:
-                            logger.info(f"🎯 TARGET 2 @ 1.0R HIT! Closing {close_qty} shares ({second_close_pct*100:.0f}%) at ₹{price:.2f} - FINAL PARTIAL EXIT")
+                            logger.info(f"🎯 TARGET 2 @ 1.0R HIT! Closing {close_qty} shares ({second_close_pct*100:.0f}%) at ₹{price:.2f} - LOCK MAJORITY")
                             exit_order = self.close_position(selected_symbol, close_qty, price)
                             if exit_order:
                                 partial_pnl = (price - entry_price) * close_qty if entry_side == "BUY" else (entry_price - price) * close_qty
@@ -1384,7 +1381,16 @@ class KiteApp:
                                 logger.info(f"   ✓ Partial P&L (Target 2): ₹{partial_pnl:.2f}")
                                 second_partial_booked = True
                                 self.remaining_quantity = current_quantity - close_qty
-                                logger.info(f"✓ Remaining {self.remaining_quantity} shares still protected at SL ₹{sl_price:.2f} until market close")
+                                # 🔒 NOW MOVE SL TO ENTRY - Final 25% is GUARANTEED PROFIT
+                                old_sl = sl_price
+                                sl_price = entry_price
+                                self.sl_moved_to_breakeven = True
+                                logger.info(f"🔒 SL MOVED TO ENTRY PRICE! Final {self.remaining_quantity} shares ({(self.remaining_quantity/initial_quantity)*100:.0f}%) are now GUARANTEED until market close")
+                                logger.info(f"   Old SL: ₹{old_sl:.2f} → New SL: ₹{sl_price:.2f}")
+                                # Update stoploss order
+                                new_sl_id = self.place_stoploss_order(selected_symbol, entry_side, self.remaining_quantity, sl_price)
+                                if new_sl_id:
+                                    self.sl_order_id = new_sl_id
                                 
                                 # UPDATE DB with partial booking details
                                 if self.trade_db_id:
@@ -1394,8 +1400,6 @@ class KiteApp:
                                         exit_price=price,
                                         exit_qty=close_qty,
                                         stoploss_price=sl_price,
-                                        pnl=realized_pnl
-                                    )
                                         pnl=realized_pnl
                                     )
                 
