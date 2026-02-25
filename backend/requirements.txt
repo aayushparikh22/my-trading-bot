@@ -1,0 +1,12 @@
+Flask==2.3.3
+Flask-CORS==4.0.0
+Flask-SQLAlchemy==3.0.5
+psycopg2-binary==2.9.7
+python-dotenv==1.0.0
+PyJWT==2.8.0
+pyotp==2.9.0
+kiteconnect==4.2.0
+requests==2.31.0
+pandas==2.2.0
+pytz==2023.3.post1
+Werkzeug==2.3.7
