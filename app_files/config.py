@@ -155,22 +155,22 @@ MAX_TRADES_PER_DAY_PORTFOLIO = 999  # Unlimited total trades per day
 
 # 8. Optimized Partial Booking - AGGRESSIVE FAST PROFIT TAKING
 USE_PARTIAL_BOOKING = True     # Enable advanced exit logic
-# NEW AGGRESSIVE STRATEGY:
-# At 0.5R: Book 25% quick profit
-# At 1R: Book 50% more (SL moves to breakeven, trade is free)
+# CORRECT STRATEGY:
+# At 0.5R: Sell 50% of holdings (lock quick profit)
+# At 1R: Sell 25% more (SL already at entry = remaining 25% is FREE)
 # At market close (3:25 PM): Exit remaining 25%
 # Risk is set at 50% of original distance for tighter stops
 PARTIAL_BOOKING_1R_ACTION = "breakeven"  # Move SL to entry at 1R
 
-# FIRST TARGET: 0.5R (Quick Profit)
-PARTIAL_BOOKING_FIRST_CLOSE_PCT = 0.25   # Close 25% at 0.5R (quick profit)
-PARTIAL_BOOKING_FIRST_TARGET_R = 0.5     # First target at 0.5R (was 2.0)
+# FIRST TARGET: 0.5R (Quick Profit - SELL 50%)
+PARTIAL_BOOKING_FIRST_CLOSE_PCT = 0.50   # Close 50% at 0.5R (lock quick profit)
+PARTIAL_BOOKING_FIRST_TARGET_R = 0.5     # First target at 0.5R
 
-# SECOND TARGET: 1R (Main Target)
-PARTIAL_BOOKING_SECOND_CLOSE_PCT = 0.50  # Close 50% at 1R (was 25%)
-PARTIAL_BOOKING_SECOND_TARGET_R = 1.0    # Second target at 1R (was 2.5)
+# SECOND TARGET: 1R (Main Target - SELL 25%, SL moves to entry)
+PARTIAL_BOOKING_SECOND_CLOSE_PCT = 0.25  # Close 25% at 1R (remaining 25% is now FREE)
+PARTIAL_BOOKING_SECOND_TARGET_R = 1.0    # Second target at 1R
 
-# MARKET CLOSE: Exit remaining
+# MARKET CLOSE: Exit remaining 25%
 PARTIAL_BOOKING_EOD_CLOSE_PCT = 0.25     # Exit remaining 25% at 3:25 PM
 PARTIAL_BOOKING_EOD_TIME = "15:25"       # Market close time (3:25 PM IST)
 
@@ -188,9 +188,9 @@ AUTO_SHUTDOWN_ON_LOSS_LIMIT = True  # Auto-stop bot at 2% loss
 
 # ===== AUTOMATED PROFIT TAKING =====
 PROFIT_TARGET_TYPE = "ratio"   # "ratio", "percent", or "fixed"
-PROFIT_TARGET_RATIO = 2.0      # Keep 1:2 risk:reward ratio (entry + 2×risk)
-                              # BUT book profits MUCH faster:
-                              # 25% at 0.5R, 50% at 1R, 25% at market close
+PROFIT_TARGET_RATIO = 2.0      # Keep 1:2 risk:reward ratio (final target)
+                              # But book profits in 3 stages:
+                              # 50% at 0.5R, 25% at 1R, 25% at market close
 PROFIT_TARGET_PERCENT = 1.0    # 1% profit target (alternative)
 PROFIT_TARGET_FIXED = 300      # ₹300 fixed profit target (alternative)
 
