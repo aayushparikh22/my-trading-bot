@@ -153,18 +153,33 @@ RETEST_ZONE_PCT = 0.08         # Retest zone width around trigger (percent)
 MAX_TRADES_PER_SYMBOL = 999    # Unlimited trades per symbol per day
 MAX_TRADES_PER_DAY_PORTFOLIO = 999  # Unlimited total trades per day
 
-# 8. Optimized Partial Booking
+# 8. Optimized Partial Booking - AGGRESSIVE FAST PROFIT TAKING
 USE_PARTIAL_BOOKING = True     # Enable advanced exit logic
-# At 1R: Move SL to breakeven
-# At configured R1: Book 50% profit
-# At configured R2: Book additional 25% profit
-# Hold remaining 25% until stoploss or 3:25 PM auto-exit
-PARTIAL_BOOKING_1R_ACTION = "breakeven"  # Move SL to entry (trade becomes free)
-PARTIAL_BOOKING_FIRST_CLOSE_PCT = 0.50   # Close 50% at first target
-PARTIAL_BOOKING_SECOND_CLOSE_PCT = 0.25  # Close 25% at second target
-PARTIAL_BOOKING_FIRST_TARGET_R = 2.0     # First target in R multiples
-PARTIAL_BOOKING_SECOND_TARGET_R = 2.5    # Second target in R multiples
-PARTIAL_BOOKING_TRAIL_FROM = 3.0        # Trail remaining 25% from 3R level
+# NEW AGGRESSIVE STRATEGY:
+# At 0.5R: Book 25% quick profit
+# At 1R: Book 50% more (SL moves to breakeven, trade is free)
+# At market close (3:25 PM): Exit remaining 25%
+# Risk is set at 50% of original distance for tighter stops
+PARTIAL_BOOKING_1R_ACTION = "breakeven"  # Move SL to entry at 1R
+
+# FIRST TARGET: 0.5R (Quick Profit)
+PARTIAL_BOOKING_FIRST_CLOSE_PCT = 0.25   # Close 25% at 0.5R (quick profit)
+PARTIAL_BOOKING_FIRST_TARGET_R = 0.5     # First target at 0.5R (was 2.0)
+
+# SECOND TARGET: 1R (Main Target)
+PARTIAL_BOOKING_SECOND_CLOSE_PCT = 0.50  # Close 50% at 1R (was 25%)
+PARTIAL_BOOKING_SECOND_TARGET_R = 1.0    # Second target at 1R (was 2.5)
+
+# MARKET CLOSE: Exit remaining
+PARTIAL_BOOKING_EOD_CLOSE_PCT = 0.25     # Exit remaining 25% at 3:25 PM
+PARTIAL_BOOKING_EOD_TIME = "15:25"       # Market close time (3:25 PM IST)
+
+# TIGHTER STOP LOSS
+STOPLOSS_DISTANCE_FACTOR = 0.5           # SL at 50% of calculated risk distance (tighter stops)
+# Example: If Entry=100, normal SL=90 (risk=10)
+#          With this factor: New SL=95 (risk=5, which is 50% of original)
+
+PARTIAL_BOOKING_TRAIL_FROM = 1.5        # Trail remaining from 1.5R level (was 3.0)
 
 # 9. Daily Loss Limit
 USE_DAILY_LOSS_LIMIT = True    # Hard stop at daily loss threshold
@@ -173,9 +188,11 @@ AUTO_SHUTDOWN_ON_LOSS_LIMIT = True  # Auto-stop bot at 2% loss
 
 # ===== AUTOMATED PROFIT TAKING =====
 PROFIT_TARGET_TYPE = "ratio"   # "ratio", "percent", or "fixed"
-PROFIT_TARGET_RATIO = 2.0      # 2:1 risk:reward ratio
-PROFIT_TARGET_PERCENT = 1.0    # 1% profit target
-PROFIT_TARGET_FIXED = 300      # ₹300 fixed profit target
+PROFIT_TARGET_RATIO = 2.0      # Keep 1:2 risk:reward ratio (entry + 2×risk)
+                              # BUT book profits MUCH faster:
+                              # 25% at 0.5R, 50% at 1R, 25% at market close
+PROFIT_TARGET_PERCENT = 1.0    # 1% profit target (alternative)
+PROFIT_TARGET_FIXED = 300      # ₹300 fixed profit target (alternative)
 
 # ===== KITE API DOCUMENTATION REFERENCE =====
 # Product Type Values (product_type parameter):

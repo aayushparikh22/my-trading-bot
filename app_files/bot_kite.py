@@ -1112,6 +1112,10 @@ class KiteApp:
             # Fallback: Use VWAP
             sl_price = selected_symbol_data["vwap"]
         
+        # IMPROVEMENT #9: Tighter Stop Loss (apply distance factor)
+        # Apply STOPLOSS_DISTANCE_FACTOR to make SL tighter (50% closer to entry)
+        sl_price = self.apply_stoploss_distance_factor(entry_price, sl_price, entry_side)
+        
         # Store traded symbol for partial exit tracking
         self.traded_symbol = selected_symbol
         
@@ -1162,6 +1166,7 @@ class KiteApp:
         last_price = entry_price
         target_price = None
         second_target_price = None
+        eod_target_price = None
         token = selected_symbol_data["token"]
         self.partial_booked_75pct = False
         first_partial_booked = False
@@ -1173,15 +1178,27 @@ class KiteApp:
         
         if config.PROFIT_TARGET_TYPE == "ratio":
             risk = abs(entry_price - sl_price)
-            reward = risk * config.PROFIT_TARGET_RATIO
-            target_price = entry_price + reward if entry_side == "BUY" else entry_price - reward
-            second_reward = risk * getattr(config, 'PARTIAL_BOOKING_SECOND_TARGET_R', 2.5)
+            
+            # AGGRESSIVE PARTIAL BOOKING TARGETS:
+            # First target at 0.5R (take 25% quick profit)
+            first_reward = risk * getattr(config, 'PARTIAL_BOOKING_FIRST_TARGET_R', 0.5)
+            target_price = entry_price + first_reward if entry_side == "BUY" else entry_price - first_reward
+            
+            # Second target at 1R (take 50% at breakeven SL)
+            second_reward = risk * getattr(config, 'PARTIAL_BOOKING_SECOND_TARGET_R', 1.0)
             second_target_price = entry_price + second_reward if entry_side == "BUY" else entry_price - second_reward
+            
+            # Final target at 2R (for end of day - hold remaining 25%)
+            final_reward = risk * config.PROFIT_TARGET_RATIO
+            eod_target_price = entry_price + final_reward if entry_side == "BUY" else entry_price - final_reward
 
-        first_close_pct = getattr(config, 'PARTIAL_BOOKING_FIRST_CLOSE_PCT', 0.50)
-        second_close_pct = getattr(config, 'PARTIAL_BOOKING_SECOND_CLOSE_PCT', 0.25)
+        first_close_pct = getattr(config, 'PARTIAL_BOOKING_FIRST_CLOSE_PCT', 0.25)
+        second_close_pct = getattr(config, 'PARTIAL_BOOKING_SECOND_CLOSE_PCT', 0.50)
+        eod_close_pct = getattr(config, 'PARTIAL_BOOKING_EOD_CLOSE_PCT', 0.25)
+        
         first_close_qty = int(initial_quantity * first_close_pct)
         second_close_qty = int(initial_quantity * second_close_pct)
+        eod_close_qty = int(initial_quantity * eod_close_pct)
 
         if initial_quantity >= 2 and first_close_qty == 0:
             first_close_qty = 1
@@ -1201,15 +1218,17 @@ class KiteApp:
         base_risk = abs(entry_price - sl_price)
         
         logger.info(f"")
-        logger.info(f"🎯 EXIT TARGETS for {selected_symbol}:")
+        logger.info(f"🎯 AGGRESSIVE EXIT TARGETS for {selected_symbol}:")
         if config.USE_PARTIAL_BOOKING and target_price:
-            logger.info(f"   Target 1 ({first_close_pct*100:.0f}% qty): ₹{target_price:.2f}")
+            logger.info(f"   Target 1 @ 0.5R ({first_close_pct*100:.0f}% qty): ₹{target_price:.2f} - QUICK PROFIT")
             if second_target_price:
-                logger.info(f"   Target 2 ({second_close_pct*100:.0f}% qty): ₹{second_target_price:.2f}")
+                logger.info(f"   Target 2 @ 1.0R ({second_close_pct*100:.0f}% qty): ₹{second_target_price:.2f} - SL MOVES TO BREAKEVEN")
+            if eod_target_price:
+                logger.info(f"   Target 3 @ 2.0R ({eod_close_pct*100:.0f}% qty): ₹{eod_target_price:.2f} - FINAL TARGET")
             logger.info("   Final Qty Exit: 3:25 PM auto-exit (or Stoploss hit earlier)")
         elif target_price:
             logger.info(f"   Profit Target: ₹{target_price:.2f}")
-        logger.info(f"   Stoploss: ₹{sl_price:.2f}")
+        logger.info(f"   Stoploss (TIGHT): ₹{sl_price:.2f} (50% closer to entry)")
         logger.info("")
         
         # Monitoring loop
@@ -1310,26 +1329,42 @@ class KiteApp:
                         if new_sl_id:
                             self.sl_order_id = new_sl_id
                     
-                    # Target 1: Close configured first % (default 50%)
+                    # Target 1: Close 25% at 0.5R (QUICK PROFIT)
                     current_quantity = self.remaining_quantity if self.remaining_quantity else quantity
                     if (not first_partial_booked and target_price and first_close_qty > 0 and current_quantity > 1 and
                         ((entry_side == "BUY" and price >= target_price) or (entry_side == "SELL" and price <= target_price))):
                         close_qty = min(first_close_qty, max(current_quantity - 1, 0))
                         if close_qty > 0:
-                            logger.info(f"🎯 TARGET 1 HIT! Closing {close_qty} shares at ₹{price:.2f}")
+                            logger.info(f"🎯 TARGET 1 @ 0.5R HIT! Closing {close_qty} shares ({first_close_pct*100:.0f}%) at ₹{price:.2f} - QUICK PROFIT TAKEN")
                             exit_order = self.close_position(selected_symbol, close_qty, price)
                             if exit_order:
                                 partial_pnl = (price - entry_price) * close_qty if entry_side == "BUY" else (entry_price - price) * close_qty
                                 realized_pnl += partial_pnl
-                                logger.info(f"   Partial P&L (Target 1): ₹{partial_pnl:.2f}")
+                                logger.info(f"   ✓ Partial P&L (Target 1): ₹{partial_pnl:.2f}")
                                 first_partial_booked = True
                                 self.remaining_quantity = current_quantity - close_qty
+
+                    # Target 2: Close 50% at 1.0R (MAIN TARGET - SL MOVES TO BREAKEVEN)
+                    current_quantity = self.remaining_quantity if self.remaining_quantity else quantity
+                    if (first_partial_booked and not second_partial_booked and second_target_price and second_close_qty > 0 and current_quantity > 1 and
+                        ((entry_side == "BUY" and price >= second_target_price) or (entry_side == "SELL" and price <= second_target_price))):
+                        close_qty = min(second_close_qty, max(current_quantity - 1, 0))
+                        if close_qty > 0:
+                            logger.info(f"🎯 TARGET 2 @ 1.0R HIT! Closing {close_qty} shares ({second_close_pct*100:.0f}%) at ₹{price:.2f} - MAIN TARGET")
+                            exit_order = self.close_position(selected_symbol, close_qty, price)
+                            if exit_order:
+                                partial_pnl = (price - entry_price) * close_qty if entry_side == "BUY" else (entry_price - price) * close_qty
+                                realized_pnl += partial_pnl
+                                logger.info(f"   ✓ Partial P&L (Target 2): ₹{partial_pnl:.2f}")
+                                second_partial_booked = True
+                                self.remaining_quantity = current_quantity - close_qty
                                 
-                                # 🆕 TRAILING SL AFTER 2R: Move SL to entry price to guarantee profit on remaining position
+                                # 🔒 LOCK PROFITS: Move SL to entry price - remaining position is now FREE
                                 old_sl = sl_price
                                 sl_price = entry_price
                                 self.sl_moved_to_entry_after_2r = True
-                                logger.info(f"🔒 IMPROVEMENT #9: After 2R booking - SL moved to entry price ₹{sl_price:.2f} (profit locked!)")
+                                logger.info(f"🔒 SL MOVED TO BREAKEVEN! Remaining position is now FREE (guaranteed profit)")
+                                logger.info(f"   Old SL: ₹{old_sl:.2f} → New SL: ₹{sl_price:.2f}")
                                 
                                 # Update stoploss order on exchange
                                 new_sl_id = self.place_stoploss_order(selected_symbol, entry_side, self.remaining_quantity, sl_price)
@@ -1346,19 +1381,6 @@ class KiteApp:
                                         stoploss_price=sl_price,
                                         pnl=realized_pnl
                                     )
-
-                    # Target 2: Close configured second % (default 25%)
-                    current_quantity = self.remaining_quantity if self.remaining_quantity else quantity
-                    if (first_partial_booked and not second_partial_booked and second_target_price and second_close_qty > 0 and current_quantity > 1 and
-                        ((entry_side == "BUY" and price >= second_target_price) or (entry_side == "SELL" and price <= second_target_price))):
-                        close_qty = min(second_close_qty, max(current_quantity - 1, 0))
-                        if close_qty > 0:
-                            logger.info(f"🎯 TARGET 2 HIT! Closing {close_qty} shares at ₹{price:.2f}")
-                            exit_order = self.close_position(selected_symbol, close_qty, price)
-                            if exit_order:
-                                partial_pnl = (price - entry_price) * close_qty if entry_side == "BUY" else (entry_price - price) * close_qty
-                                realized_pnl += partial_pnl
-                                logger.info(f"   Partial P&L (Target 2): ₹{partial_pnl:.2f}")
                                 second_partial_booked = True
                                 self.partial_booked_75pct = True
                                 self.remaining_quantity = current_quantity - close_qty
@@ -1938,6 +1960,29 @@ class KiteApp:
     
     # PHASE 3: RISK & EXIT MANAGEMENT
     
+    def apply_stoploss_distance_factor(self, entry_price, sl_price, side):
+        """
+        Apply STOPLOSS_DISTANCE_FACTOR to tighten stop loss
+        Default factor = 0.5 means SL moves 50% closer to entry
+        
+        Example: Entry=100, Original SL=90 (risk=10)
+                 With factor=0.5: New SL=95 (risk=5, which is 50% of original)
+        """
+        factor = getattr(config, 'STOPLOSS_DISTANCE_FACTOR', 0.5)
+        if factor >= 1.0:
+            return sl_price  # No change if factor >= 1.0
+        
+        risk_distance = abs(entry_price - sl_price)
+        new_risk_distance = risk_distance * factor
+        
+        if side == "BUY":
+            adjusted_sl = entry_price - new_risk_distance
+        else:  # SELL
+            adjusted_sl = entry_price + new_risk_distance
+        
+        logger.info(f"   Applying STOPLOSS_DISTANCE_FACTOR ({factor}): Original SL ₹{sl_price:.2f} -> Adjusted SL ₹{adjusted_sl:.2f}")
+        return adjusted_sl
+
     def calculate_dynamic_sl(self, side, vwap, h_5, l_5):
         """
         CHANGE 7: Dynamic Stop Loss
