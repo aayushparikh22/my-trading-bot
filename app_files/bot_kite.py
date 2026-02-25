@@ -1322,15 +1322,8 @@ class KiteApp:
                     risk = base_risk if base_risk > 0 else abs(entry_price - sl_price)
                     profit = abs(price - entry_price)
                     
-                    # At 1R: Move SL to breakeven
-                    if not self.sl_moved_to_breakeven and profit >= risk:
-                        logger.info(f"IMPROVEMENT #8: 1R Hit! Moving SL to breakeven (entry price)")
-                        sl_price = entry_price
-                        self.sl_moved_to_breakeven = True
-                        # Update stoploss order
-                        new_sl_id = self.place_stoploss_order(selected_symbol, entry_side, quantity, sl_price)
-                        if new_sl_id:
-                            self.sl_order_id = new_sl_id
+                    # NOTE: SL will move to entry WHEN Stage 2 exits at 1R (not before)
+                    # This ensures synchronized exits: Stage 1 at 0.5R, Stage 2 at 1R (SL moves)
                     
                     # Target 1: Close 25% at 0.5R (QUICK PROFIT TAKING)
                     current_quantity = self.remaining_quantity if self.remaining_quantity else quantity
