@@ -1,6 +1,7 @@
 """Flask backend API for trading bot"""
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from functools import wraps
 import jwt
@@ -45,7 +46,7 @@ def append_target_order_id(notes, target_order_id):
 
 
 def cancel_order_if_open(kite, order_id, orders_by_id=None):
-    """Cancel order only if currently open/trigger-pending"""
+    """Cancel order only if currently open/trigger-pending. Safe: won't crash on errors."""
     if not order_id:
         return False
 
@@ -54,12 +55,33 @@ def cancel_order_if_open(kite, order_id, orders_by_id=None):
         status = (order.get('status') or '').upper()
         if status not in CANCELABLE_ORDER_STATUSES:
             return False
+    elif orders_by_id is not None:
+        # Order ID not found in today's orders — skip cancel to avoid API error
+        return False
 
-    return kite.cancel_order(order_id)
+    try:
+        return kite.cancel_order(order_id)
+    except Exception as e:
+        print(f"[WARN] Failed to cancel order {order_id}: {e}")
+        return False
 
+
+_reconcile_last_run = {}  # user_id -> timestamp
+RECONCILE_DEBOUNCE_SECONDS = 30  # Only reconcile once per 30 seconds per user
 
 def reconcile_open_trades_for_user(current_user):
-    """If SL/TP exit got filled, close trade and cancel opposite exit order."""
+    """If SL/TP exit got filled, close trade and cancel opposite exit order.
+    Debounced to avoid API rate limit exhaustion from frontend polling."""
+    if not current_user.kite_api_key or not current_user.kite_access_token:
+        return
+    
+    # Debounce: skip if already reconciled within RECONCILE_DEBOUNCE_SECONDS
+    now = time.time()
+    last_run = _reconcile_last_run.get(current_user.id, 0)
+    if now - last_run < RECONCILE_DEBOUNCE_SECONDS:
+        return
+    _reconcile_last_run[current_user.id] = now
+    
     if not current_user.kite_api_key or not current_user.kite_access_token:
         return
 
@@ -86,11 +108,31 @@ def reconcile_open_trades_for_user(current_user):
         exit_reason = None
         opposite_order_id = None
 
-        if sl_order and (sl_order.get('status') or '').upper() == 'COMPLETE':
+        sl_filled = sl_order and (sl_order.get('status') or '').upper() == 'COMPLETE'
+        tp_filled = tp_order and (tp_order.get('status') or '').upper() == 'COMPLETE'
+
+        # SAFETY: Check if BOTH exits got filled (exchange race condition)
+        if sl_filled and tp_filled:
+            db.session.add(BotLog(
+                user_id=current_user.id,
+                log_level='CRITICAL',
+                log_type='TRADE',
+                trade_id=trade.id,
+                message=(
+                    f"⚠️ BOTH SL AND TP FILLED for {trade.symbol}! "
+                    f"SL fill: ₹{sl_order.get('average_price', 0)} | TP fill: ₹{tp_order.get('average_price', 0)} "
+                    f"| Net position may be REVERSED — CHECK BROKER IMMEDIATELY"
+                )
+            ))
+            # Use SL as primary exit (it fired first chronologically)
+            exit_order = sl_order
+            exit_reason = 'STOPLOSS+TARGET_BOTH_FILLED'
+            opposite_order_id = None  # Already filled, nothing to cancel
+        elif sl_filled:
             exit_order = sl_order
             exit_reason = 'STOPLOSS'
             opposite_order_id = target_order_id
-        elif tp_order and (tp_order.get('status') or '').upper() == 'COMPLETE':
+        elif tp_filled:
             exit_order = tp_order
             exit_reason = 'TARGET'
             opposite_order_id = sl_order_id
@@ -1119,8 +1161,8 @@ def manual_trade():
         )
 
         if not target_order_id:
-            cancel_order_if_open(kite, stoploss_order_id)
-            return jsonify({'error': 'Entry placed but target order failed. SL cancelled for safety; please manage exit manually.'}), 500
+            # KEEP SL alive — it's the only protection for the open position!
+            return jsonify({'error': 'Entry placed but target order failed. SL is still active. Please set target manually.'}), 500
         
         # Log the trade in database
         new_trade = Trade(

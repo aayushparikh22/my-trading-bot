@@ -112,10 +112,11 @@ class Trade(db.Model):
 class DailyStats(db.Model):
     """Daily trading statistics and summary"""
     __tablename__ = 'daily_stats'
+    __table_args__ = (db.UniqueConstraint('user_id', 'stats_date', name='uq_user_stats_date'),)
     
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    stats_date = db.Column(db.Date, nullable=False, unique=True, index=True)
+    stats_date = db.Column(db.Date, nullable=False, index=True)
     
     # Daily metrics
     total_trades = db.Column(db.Integer, default=0)

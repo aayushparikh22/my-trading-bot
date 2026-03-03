@@ -1,0 +1,802 @@
+{
+  "period": {
+    "from": "2026-01-01",
+    "to": "2026-03-02",
+    "trading_days": 40
+  },
+  "capital": 80000.0,
+  "total_pnl": 750.27,
+  "total_pnl_pct": 0.94,
+  "total_trades": 28,
+  "winners": 12,
+  "losers": 16,
+  "win_rate": 42.86,
+  "avg_win": 236.3,
+  "avg_loss": -130.33,
+  "profit_factor": 1.36,
+  "expectancy": 26.8,
+  "max_drawdown": 851.51,
+  "max_drawdown_pct": 1.06,
+  "long_trades": 18,
+  "long_pnl": 178.06,
+  "short_trades": 10,
+  "short_pnl": 572.21,
+  "per_symbol": {
+    "INFY": {
+      "trades": 5,
+      "pnl": 200.09,
+      "win_rate": 60.0
+    },
+    "HDFCBANK": {
+      "trades": 3,
+      "pnl": 177.95,
+      "win_rate": 33.3
+    },
+    "RELIANCE": {
+      "trades": 7,
+      "pnl": 138.78,
+      "win_rate": 42.9
+    },
+    "BAJFINANCE": {
+      "trades": 4,
+      "pnl": 125.47,
+      "win_rate": 50.0
+    },
+    "TCS": {
+      "trades": 2,
+      "pnl": 109.55,
+      "win_rate": 50.0
+    },
+    "SBIN": {
+      "trades": 7,
+      "pnl": -1.57,
+      "win_rate": 28.6
+    }
+  },
+  "exit_stages": {
+    "STAGE1_0.5R": {
+      "count": 12,
+      "pnl": 614.85
+    },
+    "STAGE2_1R": {
+      "count": 12,
+      "pnl": 467.65
+    },
+    "STAGE3_2R": {
+      "count": 5,
+      "pnl": 1121.25
+    },
+    "STAGE3_EOD": {
+      "count": 0,
+      "pnl": 0
+    },
+    "STOPLOSS": {
+      "count": 23,
+      "pnl": -1453.48
+    },
+    "EOD_AUTO_EXIT": {
+      "count": 0,
+      "pnl": 0
+    }
+  },
+  "daily_pnl": {
+    "2026-01-01": -78.43,
+    "2026-01-02": -89.63,
+    "2026-01-05": 0,
+    "2026-01-06": -120.93,
+    "2026-01-07": 0,
+    "2026-01-08": 129.86,
+    "2026-01-09": 0,
+    "2026-01-12": 0,
+    "2026-01-13": 0,
+    "2026-01-14": 0,
+    "2026-01-16": -113.42,
+    "2026-01-19": 0,
+    "2026-01-20": -157.85,
+    "2026-01-21": 0,
+    "2026-01-22": 0,
+    "2026-01-23": 0,
+    "2026-01-28": 117.9,
+    "2026-01-29": -85.48,
+    "2026-01-30": 0,
+    "2026-02-01": -51.13,
+    "2026-02-02": 0,
+    "2026-02-03": 0,
+    "2026-02-04": 388.2,
+    "2026-02-05": -210.53,
+    "2026-02-06": -116.53,
+    "2026-02-09": 0,
+    "2026-02-10": 264.7,
+    "2026-02-11": 621.63,
+    "2026-02-12": 195.47,
+    "2026-02-13": 217.5,
+    "2026-02-16": 353.05,
+    "2026-02-17": 212.0,
+    "2026-02-18": 0,
+    "2026-02-19": -357.89,
+    "2026-02-20": -52.97,
+    "2026-02-24": -125.39,
+    "2026-02-25": -315.27,
+    "2026-02-26": 125.38,
+    "2026-02-27": 0,
+    "2026-03-02": 0
+  },
+  "trades": [
+    {
+      "symbol": "SBIN",
+      "side": "BUY",
+      "entry_price": 985.7,
+      "entry_time": "2026-01-01T10:00:00+05:30",
+      "exit_time": "2026-01-01T10:10:00+05:30",
+      "quantity": 34,
+      "pnl": -78.43,
+      "gap_pct": 0.0,
+      "open_bias": "NEUTRAL",
+      "exit_parts": [
+        [
+          34,
+          983.39,
+          "STOPLOSS",
+          -78.43
+        ]
+      ]
+    },
+    {
+      "symbol": "HDFCBANK",
+      "side": "BUY",
+      "entry_price": 998.8,
+      "entry_time": "2026-01-02T09:50:00+05:30",
+      "exit_time": "2026-01-02T10:10:00+05:30",
+      "quantity": 34,
+      "pnl": -89.63,
+      "gap_pct": 0.0,
+      "open_bias": "NEUTRAL",
+      "exit_parts": [
+        [
+          34,
+          996.16,
+          "STOPLOSS",
+          -89.63
+        ]
+      ]
+    },
+    {
+      "symbol": "BAJFINANCE",
+      "side": "BUY",
+      "entry_price": 985.3,
+      "entry_time": "2026-01-06T10:15:00+05:30",
+      "exit_time": "2026-01-06T10:40:00+05:30",
+      "quantity": 34,
+      "pnl": -120.93,
+      "gap_pct": 0.04,
+      "open_bias": "LONG",
+      "exit_parts": [
+        [
+          34,
+          981.74,
+          "STOPLOSS",
+          -120.93
+        ]
+      ]
+    },
+    {
+      "symbol": "BAJFINANCE",
+      "side": "BUY",
+      "entry_price": 975.55,
+      "entry_time": "2026-01-08T09:45:00+05:30",
+      "exit_time": "2026-01-08T10:05:00+05:30",
+      "quantity": 34,
+      "pnl": -119.74,
+      "gap_pct": -0.12,
+      "open_bias": "LONG",
+      "exit_parts": [
+        [
+          34,
+          972.03,
+          "STOPLOSS",
+          -119.74
+        ]
+      ]
+    },
+    {
+      "symbol": "RELIANCE",
+      "side": "SELL",
+      "entry_price": 1488.0,
+      "entry_time": "2026-01-08T10:20:00+05:30",
+      "exit_time": "2026-01-08T12:35:00+05:30",
+      "quantity": 22,
+      "pnl": 249.6,
+      "gap_pct": -0.35,
+      "open_bias": "NEUTRAL",
+      "exit_parts": [
+        [
+          5,
+          1481.5,
+          "STAGE1_0.5R",
+          32.5
+        ],
+        [
+          4,
+          1481.5,
+          "STAGE2_1R",
+          26.0
+        ],
+        [
+          13,
+          1473.3,
+          "STAGE3_2R",
+          191.1
+        ]
+      ]
+    },
+    {
+      "symbol": "SBIN",
+      "side": "BUY",
+      "entry_price": 1037.2,
+      "entry_time": "2026-01-16T10:00:00+05:30",
+      "exit_time": "2026-01-16T10:10:00+05:30",
+      "quantity": 32,
+      "pnl": -113.42,
+      "gap_pct": 0.19,
+      "open_bias": "NEUTRAL",
+      "exit_parts": [
+        [
+          32,
+          1033.66,
+          "STOPLOSS",
+          -113.42
+        ]
+      ]
+    },
+    {
+      "symbol": "RELIANCE",
+      "side": "SELL",
+      "entry_price": 1403.2,
+      "entry_time": "2026-01-20T09:50:00+05:30",
+      "exit_time": "2026-01-20T10:35:00+05:30",
+      "quantity": 24,
+      "pnl": -157.85,
+      "gap_pct": -0.18,
+      "open_bias": "NEUTRAL",
+      "exit_parts": [
+        [
+          24,
+          1409.78,
+          "STOPLOSS",
+          -157.85
+        ]
+      ]
+    },
+    {
+      "symbol": "INFY",
+      "side": "SELL",
+      "entry_price": 1665.8,
+      "entry_time": "2026-01-28T10:05:00+05:30",
+      "exit_time": "2026-01-28T15:05:00+05:30",
+      "quantity": 20,
+      "pnl": 117.9,
+      "gap_pct": -0.44,
+      "open_bias": "NEUTRAL",
+      "exit_parts": [
+        [
+          5,
+          1652.7,
+          "STAGE1_0.5R",
+          65.5
+        ],
+        [
+          4,
+          1652.7,
+          "STAGE2_1R",
+          52.4
+        ],
+        [
+          11,
+          1665.8,
+          "STOPLOSS",
+          0.0
+        ]
+      ]
+    },
+    {
+      "symbol": "HDFCBANK",
+      "side": "SELL",
+      "entry_price": 926.0,
+      "entry_time": "2026-01-29T10:10:00+05:30",
+      "exit_time": "2026-01-29T10:35:00+05:30",
+      "quantity": 36,
+      "pnl": -85.48,
+      "gap_pct": -0.25,
+      "open_bias": "NEUTRAL",
+      "exit_parts": [
+        [
+          36,
+          928.37,
+          "STOPLOSS",
+          -85.48
+        ]
+      ]
+    },
+    {
+      "symbol": "RELIANCE",
+      "side": "BUY",
+      "entry_price": 1404.8,
+      "entry_time": "2026-02-01T10:10:00+05:30",
+      "exit_time": "2026-02-01T12:10:00+05:30",
+      "quantity": 24,
+      "pnl": 49.0,
+      "gap_pct": -0.07,
+      "open_bias": "NEUTRAL",
+      "exit_parts": [
+        [
+          6,
+          1409.7,
+          "STAGE1_0.5R",
+          29.4
+        ],
+        [
+          4,
+          1409.7,
+          "STAGE2_1R",
+          19.6
+        ],
+        [
+          14,
+          1404.8,
+          "STOPLOSS",
+          0.0
+        ]
+      ]
+    },
+    {
+      "symbol": "SBIN",
+      "side": "BUY",
+      "entry_price": 1080.6,
+      "entry_time": "2026-02-01T09:50:00+05:30",
+      "exit_time": "2026-02-01T10:10:00+05:30",
+      "quantity": 31,
+      "pnl": -100.13,
+      "gap_pct": -0.19,
+      "open_bias": "NEUTRAL",
+      "exit_parts": [
+        [
+          31,
+          1077.37,
+          "STOPLOSS",
+          -100.13
+        ]
+      ]
+    },
+    {
+      "symbol": "INFY",
+      "side": "SELL",
+      "entry_price": 1550.6,
+      "entry_time": "2026-02-04T10:10:00+05:30",
+      "exit_time": "2026-02-04T11:25:00+05:30",
+      "quantity": 21,
+      "pnl": 388.2,
+      "gap_pct": -4.88,
+      "open_bias": "NEUTRAL",
+      "exit_parts": [
+        [
+          5,
+          1540.0,
+          "STAGE1_0.5R",
+          53.0
+        ],
+        [
+          4,
+          1540.0,
+          "STAGE2_1R",
+          42.4
+        ],
+        [
+          12,
+          1526.2,
+          "STAGE3_2R",
+          292.8
+        ]
+      ]
+    },
+    {
+      "symbol": "SBIN",
+      "side": "BUY",
+      "entry_price": 1080.0,
+      "entry_time": "2026-02-05T10:20:00+05:30",
+      "exit_time": "2026-02-05T11:15:00+05:30",
+      "quantity": 31,
+      "pnl": -210.53,
+      "gap_pct": 0.08,
+      "open_bias": "LONG",
+      "exit_parts": [
+        [
+          31,
+          1073.21,
+          "STOPLOSS",
+          -210.53
+        ]
+      ]
+    },
+    {
+      "symbol": "SBIN",
+      "side": "SELL",
+      "entry_price": 1065.6,
+      "entry_time": "2026-02-06T10:10:00+05:30",
+      "exit_time": "2026-02-06T10:20:00+05:30",
+      "quantity": 31,
+      "pnl": -116.53,
+      "gap_pct": -0.27,
+      "open_bias": "NEUTRAL",
+      "exit_parts": [
+        [
+          31,
+          1069.36,
+          "STOPLOSS",
+          -116.53
+        ]
+      ]
+    },
+    {
+      "symbol": "TCS",
+      "side": "BUY",
+      "entry_price": 2975.2,
+      "entry_time": "2026-02-10T09:40:00+05:30",
+      "exit_time": "2026-02-10T10:45:00+05:30",
+      "quantity": 11,
+      "pnl": 264.7,
+      "gap_pct": -0.04,
+      "open_bias": "NEUTRAL",
+      "exit_parts": [
+        [
+          2,
+          2990.8,
+          "STAGE1_0.5R",
+          31.2
+        ],
+        [
+          2,
+          2990.8,
+          "STAGE2_1R",
+          31.2
+        ],
+        [
+          7,
+          3004.1,
+          "STAGE3_2R",
+          202.3
+        ]
+      ]
+    },
+    {
+      "symbol": "BAJFINANCE",
+      "side": "BUY",
+      "entry_price": 968.95,
+      "entry_time": "2026-02-11T10:30:00+05:30",
+      "exit_time": "2026-02-11T10:50:00+05:30",
+      "quantity": 35,
+      "pnl": 129.54,
+      "gap_pct": 0.02,
+      "open_bias": "NEUTRAL",
+      "exit_parts": [
+        [
+          8,
+          973.45,
+          "STAGE1_0.5R",
+          36.0
+        ],
+        [
+          7,
+          973.45,
+          "STAGE2_1R",
+          31.5
+        ],
+        [
+          20,
+          972.05,
+          "STOPLOSS",
+          62.04
+        ]
+      ]
+    },
+    {
+      "symbol": "SBIN",
+      "side": "BUY",
+      "entry_price": 1161.4,
+      "entry_time": "2026-02-11T10:30:00+05:30",
+      "exit_time": "2026-02-11T14:55:00+05:30",
+      "quantity": 29,
+      "pnl": 492.09,
+      "gap_pct": 0.15,
+      "open_bias": "LONG",
+      "exit_parts": [
+        [
+          7,
+          1172.0,
+          "STAGE1_0.5R",
+          74.2
+        ],
+        [
+          5,
+          1172.0,
+          "STAGE2_1R",
+          53.0
+        ],
+        [
+          17,
+          1182.86,
+          "STOPLOSS",
+          364.89
+        ]
+      ]
+    },
+    {
+      "symbol": "BAJFINANCE",
+      "side": "BUY",
+      "entry_price": 975.1,
+      "entry_time": "2026-02-12T09:45:00+05:30",
+      "exit_time": "2026-02-12T10:35:00+05:30",
+      "quantity": 34,
+      "pnl": 236.6,
+      "gap_pct": -0.01,
+      "open_bias": "NEUTRAL",
+      "exit_parts": [
+        [
+          8,
+          979.0,
+          "STAGE1_0.5R",
+          31.2
+        ],
+        [
+          6,
+          979.0,
+          "STAGE2_1R",
+          23.4
+        ],
+        [
+          20,
+          984.2,
+          "STAGE3_2R",
+          182.0
+        ]
+      ]
+    },
+    {
+      "symbol": "RELIANCE",
+      "side": "SELL",
+      "entry_price": 1463.6,
+      "entry_time": "2026-02-12T10:05:00+05:30",
+      "exit_time": "2026-02-12T10:20:00+05:30",
+      "quantity": 23,
+      "pnl": -41.13,
+      "gap_pct": 0.14,
+      "open_bias": "NEUTRAL",
+      "exit_parts": [
+        [
+          23,
+          1465.39,
+          "STOPLOSS",
+          -41.13
+        ]
+      ]
+    },
+    {
+      "symbol": "RELIANCE",
+      "side": "SELL",
+      "entry_price": 1432.3,
+      "entry_time": "2026-02-13T10:10:00+05:30",
+      "exit_time": "2026-02-13T11:55:00+05:30",
+      "quantity": 23,
+      "pnl": 217.5,
+      "gap_pct": -0.22,
+      "open_bias": "NEUTRAL",
+      "exit_parts": [
+        [
+          5,
+          1423.9,
+          "STAGE1_0.5R",
+          42.0
+        ],
+        [
+          4,
+          1423.9,
+          "STAGE2_1R",
+          33.6
+        ],
+        [
+          14,
+          1422.16,
+          "STOPLOSS",
+          141.9
+        ]
+      ]
+    },
+    {
+      "symbol": "HDFCBANK",
+      "side": "BUY",
+      "entry_price": 916.75,
+      "entry_time": "2026-02-16T09:45:00+05:30",
+      "exit_time": "2026-02-16T12:40:00+05:30",
+      "quantity": 37,
+      "pnl": 353.05,
+      "gap_pct": -0.01,
+      "open_bias": "LONG",
+      "exit_parts": [
+        [
+          9,
+          923.0,
+          "STAGE1_0.5R",
+          56.25
+        ],
+        [
+          7,
+          923.0,
+          "STAGE2_1R",
+          43.75
+        ],
+        [
+          21,
+          928.8,
+          "STAGE3_2R",
+          253.05
+        ]
+      ]
+    },
+    {
+      "symbol": "INFY",
+      "side": "BUY",
+      "entry_price": 1402.9,
+      "entry_time": "2026-02-17T09:30:00+05:30",
+      "exit_time": "2026-02-17T13:55:00+05:30",
+      "quantity": 24,
+      "pnl": 212.0,
+      "gap_pct": 0.0,
+      "open_bias": "LONG",
+      "exit_parts": [
+        [
+          6,
+          1424.1,
+          "STAGE1_0.5R",
+          127.2
+        ],
+        [
+          4,
+          1424.1,
+          "STAGE2_1R",
+          84.8
+        ],
+        [
+          14,
+          1402.9,
+          "STOPLOSS",
+          0.0
+        ]
+      ]
+    },
+    {
+      "symbol": "INFY",
+      "side": "BUY",
+      "entry_price": 1399.7,
+      "entry_time": "2026-02-19T10:05:00+05:30",
+      "exit_time": "2026-02-19T10:15:00+05:30",
+      "quantity": 24,
+      "pnl": -202.74,
+      "gap_pct": 0.95,
+      "open_bias": "LONG",
+      "exit_parts": [
+        [
+          24,
+          1391.25,
+          "STOPLOSS",
+          -202.74
+        ]
+      ]
+    },
+    {
+      "symbol": "TCS",
+      "side": "BUY",
+      "entry_price": 2737.1,
+      "entry_time": "2026-02-19T10:00:00+05:30",
+      "exit_time": "2026-02-19T10:25:00+05:30",
+      "quantity": 12,
+      "pnl": -155.15,
+      "gap_pct": 0.5,
+      "open_bias": "LONG",
+      "exit_parts": [
+        [
+          12,
+          2724.17,
+          "STOPLOSS",
+          -155.15
+        ]
+      ]
+    },
+    {
+      "symbol": "RELIANCE",
+      "side": "BUY",
+      "entry_price": 1415.1,
+      "entry_time": "2026-02-20T09:35:00+05:30",
+      "exit_time": "2026-02-20T10:05:00+05:30",
+      "quantity": 24,
+      "pnl": -52.97,
+      "gap_pct": 0.16,
+      "open_bias": "NEUTRAL",
+      "exit_parts": [
+        [
+          24,
+          1412.89,
+          "STOPLOSS",
+          -52.97
+        ]
+      ]
+    },
+    {
+      "symbol": "RELIANCE",
+      "side": "SELL",
+      "entry_price": 1416.7,
+      "entry_time": "2026-02-24T10:10:00+05:30",
+      "exit_time": "2026-02-24T11:30:00+05:30",
+      "quantity": 23,
+      "pnl": -125.39,
+      "gap_pct": 0.02,
+      "open_bias": "NEUTRAL",
+      "exit_parts": [
+        [
+          23,
+          1422.15,
+          "STOPLOSS",
+          -125.39
+        ]
+      ]
+    },
+    {
+      "symbol": "INFY",
+      "side": "BUY",
+      "entry_price": 1317.9,
+      "entry_time": "2026-02-25T09:55:00+05:30",
+      "exit_time": "2026-02-25T11:05:00+05:30",
+      "quantity": 25,
+      "pnl": -315.27,
+      "gap_pct": 0.45,
+      "open_bias": "LONG",
+      "exit_parts": [
+        [
+          25,
+          1305.29,
+          "STOPLOSS",
+          -315.27
+        ]
+      ]
+    },
+    {
+      "symbol": "SBIN",
+      "side": "SELL",
+      "entry_price": 1197.7,
+      "entry_time": "2026-02-26T10:10:00+05:30",
+      "exit_time": "2026-02-26T10:40:00+05:30",
+      "quantity": 28,
+      "pnl": 125.38,
+      "gap_pct": 0.12,
+      "open_bias": "NEUTRAL",
+      "exit_parts": [
+        [
+          7,
+          1192.5,
+          "STAGE1_0.5R",
+          36.4
+        ],
+        [
+          5,
+          1192.5,
+          "STAGE2_1R",
+          26.0
+        ],
+        [
+          16,
+          1193.76,
+          "STOPLOSS",
+          62.98
+        ]
+      ]
+    }
+  ]
+}

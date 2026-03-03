@@ -837,7 +837,19 @@ class KiteApp:
         # Limit number of stocks to scan (to avoid API rate limits)
         max_stocks = getattr(config, 'MAX_STOCKS_TO_SCAN', 20)
         symbols_to_process = config.SYMBOLS_TO_MONITOR[:max_stocks]
-        logger.info(f"📊 Scanning top {len(symbols_to_process)} stocks (max: {max_stocks})")
+        
+        # Apply FOCUS_SYMBOLS filter (only trade backtest-validated top performers)
+        focus_symbols = getattr(config, 'FOCUS_SYMBOLS', [])
+        excluded_symbols = getattr(config, 'EXCLUDED_SYMBOLS', [])
+        if focus_symbols:
+            symbols_to_process = [s for s in symbols_to_process if s['symbol'] in focus_symbols]
+            logger.info(f"🎯 FOCUS MODE: Only trading {len(symbols_to_process)} symbols: {[s['symbol'] for s in symbols_to_process]}")
+        elif excluded_symbols:
+            before = len(symbols_to_process)
+            symbols_to_process = [s for s in symbols_to_process if s['symbol'] not in excluded_symbols]
+            logger.info(f"⛔ Excluded {before - len(symbols_to_process)} symbols: {excluded_symbols}")
+        
+        logger.info(f"📊 Scanning {len(symbols_to_process)} stocks")
         
         for symbol_config in symbols_to_process:
             symbol = symbol_config["symbol"]
@@ -1028,15 +1040,17 @@ class KiteApp:
                 break
             
             # IMPROVEMENT #4: Extended entry window - check if trading is allowed
-            if current_time_int >= 1045:  # After 10:45 AM
-                logger.info("⏰ Entry window CLOSED (after 10:45 AM)")
-                self.log_to_db("⏰ Entry window CLOSED (after 10:45 AM)")
+            no_entry_after = getattr(config, 'NO_ENTRY_AFTER', 1030)
+            soft_cutoff_start = getattr(config, 'SOFT_CUTOFF_START', 1015)
+            if current_time_int >= no_entry_after:
+                logger.info(f"⏰ Entry window CLOSED (after {no_entry_after})")
+                self.log_to_db(f"⏰ Entry window CLOSED (after {no_entry_after})")
                 break
             
             # Determine window state for soft cutoff logic
-            if current_time_int < 1015:  # Before 10:15 AM
+            if current_time_int < soft_cutoff_start:
                 self.entry_window_state = "PRIMARY"
-            elif current_time_int < 1045:  # Between 10:15-10:45 AM
+            elif current_time_int < no_entry_after:
                 self.entry_window_state = "SOFT"
             else:
                 self.entry_window_state = "CLOSED"
@@ -1140,6 +1154,14 @@ class KiteApp:
 
                 # Check for long signal
                 if c_5 > long_trigger and c_5 > vwap:
+                    # SKIP_OPEN_BIAS_SHORT: Skip ALL trades when open_bias=SHORT (backtest: 28% WR, toxic)
+                    if getattr(config, 'SKIP_OPEN_BIAS_SHORT', False):
+                        open_bias = data.get('open_bias', 'NEUTRAL')
+                        if open_bias == "SHORT":
+                            logger.info(f"   ⚠️  {symbol}: Open bias SHORT — skipping ALL trades (SKIP_OPEN_BIAS_SHORT)")
+                            self.log_skip(f"{symbol}: Open bias SHORT — all trades skipped")
+                            continue
+                    
                     # Apply soft cutoff restrictions
                     if self.entry_window_state == "SOFT":
                         # In soft window, need extra confirmation (volume 2x or ATR expanding)
@@ -1208,6 +1230,14 @@ class KiteApp:
                 
                 # Check for short signal
                 elif c_5 < short_trigger and c_5 < vwap:
+                    # SKIP_OPEN_BIAS_SHORT: Skip ALL trades when open_bias=SHORT (backtest: 28% WR, toxic)
+                    if getattr(config, 'SKIP_OPEN_BIAS_SHORT', False):
+                        open_bias = data.get('open_bias', 'NEUTRAL')
+                        if open_bias == "SHORT":
+                            logger.info(f"   ⚠️  {symbol}: Open bias SHORT — skipping ALL trades (SKIP_OPEN_BIAS_SHORT)")
+                            self.log_skip(f"{symbol}: Open bias SHORT — all trades skipped")
+                            continue
+                    
                     # Apply soft cutoff restrictions
                     if self.entry_window_state == "SOFT":
                         if not volume_confirmed:
@@ -1467,18 +1497,18 @@ class KiteApp:
         logger.info(f"")
         logger.info(f"🎯 THREE-STAGE AGGRESSIVE EXIT STRATEGY for {selected_symbol}:")
         if config.USE_PARTIAL_BOOKING and target_price:
-            logger.info(f"   STAGE 1 @ 0.5R ({first_close_pct*100:.0f}% qty): ₹{target_price:.2f}")
+            logger.info(f"   STAGE 1 @ {config.PARTIAL_BOOKING_FIRST_TARGET_R}R ({first_close_pct*100:.0f}% qty): ₹{target_price:.2f}")
             logger.info(f"            └─→ Take quick profit (SL still tight, remaining protected)")
             if second_target_price:
-                logger.info(f"   STAGE 2 @ 1.0R ({second_close_pct*100:.0f}% qty): ₹{second_target_price:.2f}")
+                logger.info(f"   STAGE 2 @ {config.PARTIAL_BOOKING_SECOND_TARGET_R}R ({second_close_pct*100:.0f}% qty): ₹{second_target_price:.2f}")
                 logger.info(f"            └─→ Lock 20% at 1:1 risk/reward + Move SL to entry (remaining {eod_close_pct*100:.0f}% GUARANTEED)")
             if eod_target_price:
-                logger.info(f"   STAGE 3 @ 2.0R ({eod_close_pct*100:.0f}% qty): ₹{eod_target_price:.2f}")
-                logger.info(f"            └─→ Runner {eod_close_pct*100:.0f}% exit at 2R OR auto-exit at 3:25 PM")
+                logger.info(f"   STAGE 3 @ {config.PROFIT_TARGET_RATIO}R ({eod_close_pct*100:.0f}% qty): ₹{eod_target_price:.2f}")
+                logger.info(f"            └─→ Runner {eod_close_pct*100:.0f}% exit at {config.PROFIT_TARGET_RATIO}R OR auto-exit at 3:25 PM")
         elif target_price:
             logger.info(f"   Profit Target: ₹{target_price:.2f}")
-        logger.info(f"   Initial Stoploss (TIGHT): ₹{sl_price:.2f} (50% closer to entry)")
-        logger.info(f"   Moves to Entry: ₹{entry_price:.2f} (after Stage 1 exit at 0.5R)")
+        logger.info(f"   Initial Stoploss: ₹{sl_price:.2f} (SL factor: {config.STOPLOSS_DISTANCE_FACTOR})")
+        logger.info(f"   Moves to Entry: ₹{entry_price:.2f} (after Stage 1 exit at {config.PARTIAL_BOOKING_FIRST_TARGET_R}R)")
         logger.info("")
         
         # Monitoring loop
@@ -1618,7 +1648,7 @@ class KiteApp:
                             close_qty = 1  # At least close 1 share if available
                         if close_qty > 0:
                             exit_side = "SELL" if entry_side == "BUY" else "BUY"
-                            logger.info(f"🎯 TARGET 1 @ 0.5R HIT! Closing {close_qty} shares ({first_close_pct*100:.0f}%) at ₹{price:.2f} - QUICK PROFIT")
+                            logger.info(f"🎯 TARGET 1 @ {config.PARTIAL_BOOKING_FIRST_TARGET_R}R HIT! Closing {close_qty} shares ({first_close_pct*100:.0f}%) at ₹{price:.2f} - QUICK PROFIT")
                             logger.info(f"   Placing {exit_side} order to close {entry_side} position: symbol={selected_symbol}, qty={close_qty}, price={price:.2f}")
                             exit_order = self.close_position(selected_symbol, close_qty, price)
                             if not exit_order:
@@ -2584,14 +2614,16 @@ class KiteApp:
             current_time_int = now.hour * 100 + now.minute
             
             # Check if entry window is still open
-            if current_time_int >= 1045:
-                logger.info("⏰ Entry window CLOSED (after 10:45 AM)")
+            no_entry_after = getattr(config, 'NO_ENTRY_AFTER', 1030)
+            soft_cutoff_start = getattr(config, 'SOFT_CUTOFF_START', 1015)
+            if current_time_int >= no_entry_after:
+                logger.info(f"⏰ Entry window CLOSED (after {no_entry_after})")
                 break
             
             # Determine window state
-            if current_time_int < 1015:
+            if current_time_int < soft_cutoff_start:
                 self.entry_window_state = "PRIMARY"
-            elif current_time_int < 1045:
+            elif current_time_int < no_entry_after:
                 self.entry_window_state = "SOFT"
             else:
                 self.entry_window_state = "CLOSED"
@@ -2662,6 +2694,10 @@ class KiteApp:
                 
                 # Check for LONG signal
                 if c_5 > long_trigger and c_5 > vwap:
+                    # SKIP_OPEN_BIAS_SHORT: Skip ALL trades when open_bias=SHORT
+                    if getattr(config, 'SKIP_OPEN_BIAS_SHORT', False) and data.get('open_bias') == "SHORT":
+                        continue
+                    
                     # Apply soft cutoff restrictions
                     if self.entry_window_state == "SOFT" and not volume_confirmed:
                         continue
@@ -2695,6 +2731,10 @@ class KiteApp:
                 
                 # Check for SHORT signal
                 elif c_5 < short_trigger and c_5 < vwap:
+                    # SKIP_OPEN_BIAS_SHORT: Skip ALL trades when open_bias=SHORT
+                    if getattr(config, 'SKIP_OPEN_BIAS_SHORT', False) and data.get('open_bias') == "SHORT":
+                        continue
+                    
                     if self.entry_window_state == "SOFT" and not volume_confirmed:
                         continue
                     
@@ -3089,9 +3129,15 @@ class KiteApp:
         return False
 
     def is_nifty_bias_blocking(self, side):
-        """Soft NIFTY bias filter: only block when strongly opposite."""
+        """NIFTY bias filter: hard block for SHORT when NIFTY above VWAP, soft filter otherwise."""
         if not config.USE_NIFTY_FILTER:
             return False
+
+        # HARD BLOCK: SHORT requires NIFTY below VWAP (backtest-optimized)
+        if side == "SELL" and getattr(config, 'SHORT_REQUIRES_NIFTY_BELOW_VWAP', False):
+            if self.nifty_bias != "SHORT":  # NIFTY is LONG or NEUTRAL (above or at VWAP)
+                logger.info(f"   ⛔ SHORT blocked: NIFTY bias={self.nifty_bias}, requires NIFTY below VWAP")
+                return True
 
         if not config.USE_NIFTY_SOFT_BIAS:
             if side == "BUY" and self.nifty_bias != "LONG":
@@ -3353,8 +3399,10 @@ class KiteApp:
                 now = get_ist_time()
                 self.log_to_db(f"Main loop iteration - Current time: {now.strftime('%H:%M:%S IST')}")
                 
-                # Extended entry window: PRIMARY (9:30-10:15 AM) + SOFT (10:15-10:45 AM)
-                if now.hour > 10 or (now.hour == 10 and now.minute >= 45):
+                # Extended entry window: PRIMARY (9:30-SOFT_CUTOFF) + SOFT (SOFT_CUTOFF-NO_ENTRY_AFTER)
+                no_entry_after = getattr(config, 'NO_ENTRY_AFTER', 1030)
+                current_time_int = now.hour * 100 + now.minute
+                if current_time_int >= no_entry_after:
                     self.log_to_db(f"Entry window CLOSED check: hour={now.hour}, minute={now.minute}")
                     
                     # CHECK FOR RESTORED POSITIONS - monitor them even if entry window is closed!

@@ -213,8 +213,9 @@ class TradingService:
                 
             except Exception as e:
                 logger.error(f'Bot error for user {user_id}: {str(e)}')
-                BotLog.create_log(user_id, 'BOT', f'Bot error: {str(e)}', 'ERROR')
+                BotLog.create_log(user_id, 'BOT', f'⚠️ CRITICAL: Bot crashed! Error: {str(e)}. Open positions still have SL/TP orders at broker. Check positions immediately.', 'CRITICAL')
                 self.bot_states[user_id]['status'] = 'ERROR'
+                self.bot_states[user_id]['error'] = str(e)
     
     def record_trade(self, user_id, trade_data):
         """Record a completed trade"""
