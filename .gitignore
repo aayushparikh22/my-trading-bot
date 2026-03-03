@@ -3,6 +3,9 @@
 .env.local
 .env.*.local
 
+# Auto-login token file (contains sensitive access token)
+access_token.txt
+
 # Python
 __pycache__/
 *.py[cod]

@@ -39,6 +39,7 @@ const Dashboard = () => {
     zerodha_user_id: '',
   });
   const [savingSettings, setSavingSettings] = useState(false);
+  const [refreshingLogin, setRefreshingLogin] = useState(false);
 
   const showToast = (message, type = 'info') => {
     setToast({ message, type, id: Date.now() });
@@ -184,6 +185,19 @@ const Dashboard = () => {
     }, 2000);
   };
 
+  const handleRefreshLogin = async () => {
+    setRefreshingLogin(true);
+    try {
+      const response = await kiteAPI.autoLogin();
+      showToast(`Kite session refreshed! User: ${response.data?.user_name || 'OK'}`, 'success');
+    } catch (error) {
+      const msg = error.response?.data?.error || error.message;
+      showToast('Login refresh failed: ' + msg, 'error');
+    } finally {
+      setRefreshingLogin(false);
+    }
+  };
+
   const handleKiteLogin = async () => {
     try {
       const response = await kiteAPI.login();
@@ -253,6 +267,13 @@ const Dashboard = () => {
             onClick={botRunning ? handleStopBot : handleStartBot}
           >
             {botRunning ? '🔴 Stop Bot' : '🟢 Start Bot'}
+          </button>
+          <button
+            className={`nav-btn refresh-login-btn ${refreshingLogin ? 'refreshing' : ''}`}
+            onClick={handleRefreshLogin}
+            disabled={refreshingLogin}
+          >
+            {refreshingLogin ? '🔄 Refreshing...' : '🔑 Refresh Login'}
           </button>
           <button className="config-btn" onClick={() => setShowSettings(true)}>
             ⚙️ Settings

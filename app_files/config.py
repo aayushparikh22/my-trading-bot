@@ -19,26 +19,126 @@ EFFECTIVE_CAPITAL = STARTING_CAPITAL * LEVERAGE  # = 100,000 INR effective tradi
 # Use leverage factor in quantity sizing (explicitly scale capital)
 USE_LEVERAGE_IN_SIZING = True
 
+# ===== HARDSTOP CAPITAL LIMIT =====
+# This is the MAXIMUM capital the bot will ever use, regardless of account balance
+HARDSTOP_CAPITAL = 20000      # Maximum base capital: ₹20,000
+HARDSTOP_UTILIZATION = 0.80   # Use only 80% of hardstop: ₹16,000
+HARDSTOP_LEVERAGE = 5         # With 5x leverage: ₹80,000 effective max
+# Calculated limits:
+HARDSTOP_USABLE_CAPITAL = HARDSTOP_CAPITAL * HARDSTOP_UTILIZATION  # = ₹16,000
+HARDSTOP_EFFECTIVE_MAX = HARDSTOP_USABLE_CAPITAL * HARDSTOP_LEVERAGE  # = ₹80,000
+
 # ===== MARGIN UTILIZATION =====
-MARGIN_UTILIZATION = 0.50    # Use 50% of available capital as margin per trade
+MARGIN_UTILIZATION = 0.85    # Use 85% of available capital as margin per trade
+
+# ===== MULTI-STOCK PORTFOLIO ALLOCATION =====
+# Enable trading multiple stocks simultaneously with confidence-based allocation
+MULTI_STOCK_MODE = True       # Enable multi-stock trading (False = single stock like before)
+MAX_POSITIONS = 5             # Maximum simultaneous positions (1-10)
+MIN_ALLOCATION_PCT = 0.10     # Minimum 10% allocation per stock (prevents tiny positions)
+MAX_ALLOCATION_PCT = 0.40     # Maximum 40% allocation per stock (prevents over-concentration)
+MAX_STOCKS_TO_SCAN = 20       # Limit stocks to scan (reduces API calls) - top N from list
+
+# Confidence Scoring Weights (total should = 1.0)
+# Higher weight = more importance in allocation decision
+CONFIDENCE_WEIGHT_VOLUME = 0.20      # Volume strength (how much above average)
+CONFIDENCE_WEIGHT_BREAKOUT = 0.20    # Breakout strength (how far past trigger)
+CONFIDENCE_WEIGHT_NIFTY = 0.15       # NIFTY alignment strength
+CONFIDENCE_WEIGHT_TREND = 0.10       # Higher timeframe trend alignment
+CONFIDENCE_WEIGHT_VOLATILITY = 0.10  # ATR/volatility favorability
+CONFIDENCE_WEIGHT_GAP = 0.15         # Gap alignment (relative strength vs prev close)
+CONFIDENCE_WEIGHT_OPEN_BIAS = 0.10   # Open position within candle range
+
+# Confidence Thresholds
+MIN_CONFIDENCE_SCORE = 0.40   # Minimum score to consider (0-1 scale, 0.4 = 40%)
+HIGH_CONFIDENCE_THRESHOLD = 0.70  # Score above this gets priority allocation
+
+# ===== ENHANCEMENT: RELATIVE STRENGTH / GAP FILTER =====
+USE_GAP_FILTER = True              # Enable gap direction alignment filter
+GAP_ALIGNMENT_MIN_PCT = 0.3        # Minimum gap % to consider significant (e.g. 0.3%)
+GAP_STRONG_PCT = 1.0               # Strong gap threshold (1%+ gap = very bullish/bearish)
+GAP_CONTRADICTION_SKIP = True      # Skip signals where gap contradicts breakout direction
+
+# ===== ENHANCEMENT: OPEN POSITION BIAS FILTER =====
+USE_OPEN_POSITION_FILTER = True    # Enable open-position-in-range bias filter
+OPEN_POSITION_STRONG_ZONE = 0.25   # Top/bottom 25% of range = strong directional bias
+OPEN_POSITION_SKIP_CONTRADICTION = True  # Skip signals contradicting open position bias
                               
 # ===== TRADING STRATEGY CONFIG =====
 # Multiple symbols to monitor - bot will trade the first one that hits criteria
+# Complete NIFTY 50 Index Constituents
 SYMBOLS_TO_MONITOR = [
-    # Original Selection (Lower Volatility - Stability)
-    {"symbol": "TATASTEEL", "exchange": "NSE"},
-    {"symbol": "GOKEX", "exchange": "NSE"},
-    {"symbol": "SILVERBEES", "exchange": "NSE"},  # Nippon India Silver ETF
-    {"symbol": "MOTHERSON", "exchange": "NSE"},
-    {"symbol": "ETERNAL", "exchange": "NSE"},     # Zomato-related / Eternal
-    {"symbol": "ITBEES", "exchange": "NSE"},
+    # ===== NIFTY 50 STOCKS (All 50 Index Constituents) =====
     
-    # TIER 1 ADDITIONS - High Volatility (Better for Breakout Strategy)
-    {"symbol": "HDFCBANK", "exchange": "NSE"},    # Daily range: ₹30-50 | ATR: 12-15 | Volume: 50M+
-    {"symbol": "INFY", "exchange": "NSE"},         # Daily range: ₹20-40 | ATR: 8-12 | Volume: 40M+
-    {"symbol": "ICICIBANK", "exchange": "NSE"},    # Daily range: ₹15-30 | ATR: 6-8 | Volume: 35M+
-    {"symbol": "TCS", "exchange": "NSE"},          # Daily range: ₹40-80 | ATR: 15-20 | Volume: 8M+
-    {"symbol": "BAJAJFINSV", "exchange": "NSE"},   # Daily range: ₹200-500 | ATR: 80-120 | Volume: 2M+
+    # --- Banking & Financial Services ---
+    {"symbol": "HDFCBANK", "exchange": "NSE"},     # HDFC Bank
+    {"symbol": "ICICIBANK", "exchange": "NSE"},    # ICICI Bank
+    {"symbol": "SBIN", "exchange": "NSE"},         # State Bank of India
+    {"symbol": "KOTAKBANK", "exchange": "NSE"},    # Kotak Mahindra Bank
+    {"symbol": "AXISBANK", "exchange": "NSE"},     # Axis Bank
+    {"symbol": "INDUSINDBK", "exchange": "NSE"},   # IndusInd Bank
+    {"symbol": "BAJFINANCE", "exchange": "NSE"},   # Bajaj Finance
+    {"symbol": "BAJAJFINSV", "exchange": "NSE"},   # Bajaj Finserv
+    {"symbol": "HDFCLIFE", "exchange": "NSE"},     # HDFC Life Insurance
+    {"symbol": "SBILIFE", "exchange": "NSE"},      # SBI Life Insurance
+    {"symbol": "SHRIRAMFIN", "exchange": "NSE"},   # Shriram Finance
+    
+    # --- Information Technology ---
+    {"symbol": "TCS", "exchange": "NSE"},          # Tata Consultancy Services
+    {"symbol": "INFY", "exchange": "NSE"},         # Infosys
+    {"symbol": "HCLTECH", "exchange": "NSE"},      # HCL Technologies
+    {"symbol": "WIPRO", "exchange": "NSE"},        # Wipro
+    {"symbol": "TECHM", "exchange": "NSE"},        # Tech Mahindra
+    {"symbol": "LTIM", "exchange": "NSE"},         # LTI Mindtree
+    
+    # --- Oil, Gas & Energy ---
+    {"symbol": "RELIANCE", "exchange": "NSE"},     # Reliance Industries
+    {"symbol": "ONGC", "exchange": "NSE"},         # Oil and Natural Gas Corporation
+    {"symbol": "BPCL", "exchange": "NSE"},         # Bharat Petroleum
+    {"symbol": "NTPC", "exchange": "NSE"},         # NTPC Limited
+    {"symbol": "POWERGRID", "exchange": "NSE"},    # Power Grid Corporation
+    {"symbol": "COALINDIA", "exchange": "NSE"},    # Coal India
+    {"symbol": "ADANIPORTS", "exchange": "NSE"},   # Adani Ports and SEZ
+    {"symbol": "ADANIENT", "exchange": "NSE"},     # Adani Enterprises
+    
+    # --- Automobiles ---
+    {"symbol": "TATAMOTORS", "exchange": "NSE"},   # Tata Motors
+    {"symbol": "MARUTI", "exchange": "NSE"},       # Maruti Suzuki
+    {"symbol": "M&M", "exchange": "NSE"},          # Mahindra & Mahindra
+    {"symbol": "BAJAJ-AUTO", "exchange": "NSE"},   # Bajaj Auto
+    {"symbol": "EICHERMOT", "exchange": "NSE"},    # Eicher Motors
+    {"symbol": "HEROMOTOCO", "exchange": "NSE"},   # Hero MotoCorp
+    
+    # --- Metals & Mining ---
+    {"symbol": "TATASTEEL", "exchange": "NSE"},    # Tata Steel
+    {"symbol": "JSWSTEEL", "exchange": "NSE"},     # JSW Steel
+    {"symbol": "HINDALCO", "exchange": "NSE"},     # Hindalco Industries
+    
+    # --- Consumer Goods & FMCG ---
+    {"symbol": "HINDUNILVR", "exchange": "NSE"},   # Hindustan Unilever
+    {"symbol": "ITC", "exchange": "NSE"},          # ITC Limited
+    {"symbol": "NESTLEIND", "exchange": "NSE"},    # Nestle India
+    {"symbol": "BRITANNIA", "exchange": "NSE"},    # Britannia Industries
+    {"symbol": "TATACONSUM", "exchange": "NSE"},   # Tata Consumer Products
+    {"symbol": "TITAN", "exchange": "NSE"},        # Titan Company
+    {"symbol": "TRENT", "exchange": "NSE"},        # Trent Limited
+    
+    # --- Pharmaceuticals & Healthcare ---
+    {"symbol": "SUNPHARMA", "exchange": "NSE"},    # Sun Pharmaceutical
+    {"symbol": "DRREDDY", "exchange": "NSE"},      # Dr. Reddy's Laboratories
+    {"symbol": "CIPLA", "exchange": "NSE"},        # Cipla
+    {"symbol": "APOLLOHOSP", "exchange": "NSE"},   # Apollo Hospitals
+    
+    # --- Infrastructure & Construction ---
+    {"symbol": "LT", "exchange": "NSE"},           # Larsen & Toubro
+    {"symbol": "ULTRACEMCO", "exchange": "NSE"},   # UltraTech Cement
+    {"symbol": "GRASIM", "exchange": "NSE"},       # Grasim Industries
+    
+    # --- Telecom ---
+    {"symbol": "BHARTIARTL", "exchange": "NSE"},   # Bharti Airtel
+    
+    # --- Paints ---
+    {"symbol": "ASIANPAINT", "exchange": "NSE"},   # Asian Paints
 ]
 
 # Legacy support - keep primary symbol for backward compatibility
@@ -65,6 +165,7 @@ TIMEFRAME_ENTRY = 5           # Use 5-minute candle for entry confirmation
 #   - Stop Loss = VWAP level (tighter than High/Low)
 
 BUFFER_AMOUNT = 0.10          # Buffer in ₹ (DEPRECATED - now dynamic via ATR)
+TRIGGER_BUFFER = BUFFER_AMOUNT  # Alias for watchlist endpoint
 
 # ===== PHASE 1: CRITICAL FIXES =====
 # 1. Smart Limit Orders
@@ -88,14 +189,14 @@ USE_RETEST_ENTRY = True        # Require breakout + retest confirmation
 RETEST_MAX_CANDLES = 3         # Max 5-min candles to wait for retest
 
 # 2c. Liquidity & Spread Filter
-USE_LIQUIDITY_FILTER = True    # Enforce minimum liquidity/spread quality
+USE_LIQUIDITY_FILTER = False   # DISABLED to reduce API calls (causes rate limits)
 MIN_DAILY_VOLUME = 500000      # Minimum daily volume (shares)
 MAX_SPREAD_PCT = 0.2           # Max spread % of last price
 
 # 3. Volume Confirmation
 USE_VOLUME_FILTER = True       # Require volume confirmation before entry
-VOLUME_MULTIPLIER = 1.5       # Base volume multiplier
-VOLUME_LOOKBACK_CANDLES = 20  # Rolling lookback candles for volume baseline
+VOLUME_MULTIPLIER = 1.2        # Base volume multiplier (was 1.5x, now 1.2x for more signals)
+VOLUME_LOOKBACK_CANDLES = 10   # Rolling lookback candles (was 20, now 10 for less API calls)
 USE_TIME_OF_DAY_VOLUME = True # Adjust volume threshold by time-of-day
 VOLUME_EARLY_MULT = 1.2       # 9:15-10:15 higher expected volume
 VOLUME_MID_MULT = 1.0         # 10:15-12:30 baseline
@@ -153,25 +254,25 @@ RETEST_ZONE_PCT = 0.08         # Retest zone width around trigger (percent)
 MAX_TRADES_PER_SYMBOL = 999    # Unlimited trades per symbol per day
 MAX_TRADES_PER_DAY_PORTFOLIO = 999  # Unlimited total trades per day
 
-# 8. Optimized Partial Booking - AGGRESSIVE PROFIT LOCKING AT 1R
+# 8. Optimized Partial Booking - LET WINNERS RUN STRATEGY
 USE_PARTIAL_BOOKING = True     # Enable advanced exit logic
-# AGGRESSIVE STRATEGY (Optimized for fast profit booking):
-# At 0.5R: Sell 25% of holdings (take quick profit)
-# At 1R: Sell 50% more (lock major portion at ideal 1:1 risk/reward)
-# At market close (3:25 PM): Exit remaining 25% (let it run for 2R potential)
-# Risk is set at 50% of original distance for tighter stops
+# RUNNER-OPTIMIZED STRATEGY:
+# At 0.5R: Sell 25% of holdings (take quick profit, covers commissions)
+# At 1R: Sell 20% more (lock profit, move SL to breakeven → remaining 55% is FREE)
+# At 2R+: Let remaining 55% trail with ATR (capture big runners)
+# Key insight: After 1R, the remaining 55% is a risk-free trade. Let it run.
 PARTIAL_BOOKING_1R_ACTION = "breakeven"  # Move SL to entry at 1R
 
 # FIRST TARGET: 0.5R (Quick Profit - SELL 25%)
 PARTIAL_BOOKING_FIRST_CLOSE_PCT = 0.25   # Close 25% at 0.5R (quick profit)
 PARTIAL_BOOKING_FIRST_TARGET_R = 0.5     # First target at 0.5R
 
-# SECOND TARGET: 1R (Main Target - SELL 50%, SL moves to entry)
-PARTIAL_BOOKING_SECOND_CLOSE_PCT = 0.50  # Close 50% at 1R (lock majority at ideal risk/reward)
+# SECOND TARGET: 1R (Lock Profit - SELL 20%, SL moves to entry)
+PARTIAL_BOOKING_SECOND_CLOSE_PCT = 0.20  # Close 20% at 1R (was 50% - now keep more riding)
 PARTIAL_BOOKING_SECOND_TARGET_R = 1.0    # Second target at 1R
 
-# MARKET CLOSE: Exit remaining 25%
-PARTIAL_BOOKING_EOD_CLOSE_PCT = 0.25     # Exit remaining 25% at 3:25 PM
+# RUNNER: Trail remaining 55% with ATR, exit at 2R+ or 3:25 PM
+PARTIAL_BOOKING_EOD_CLOSE_PCT = 0.55     # Exit remaining 55% at target or 3:25 PM (was 25%)
 PARTIAL_BOOKING_EOD_TIME = "15:25"       # Market close time (3:25 PM IST)
 
 # TIGHTER STOP LOSS

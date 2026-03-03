@@ -3,6 +3,7 @@ Kite API Service Wrapper - Handles all Kite Connect API calls
 """
 
 import logging
+import time
 from datetime import datetime, timedelta
 import pytz
 from kiteconnect import KiteConnect
@@ -10,6 +11,11 @@ from app_files import config
 
 logger = logging.getLogger(__name__)
 IST = pytz.timezone('Asia/Kolkata')
+
+# Rate limiting constants
+API_RATE_LIMIT_DELAY = 1.0  # 1 second between API calls (safe for backtesting)
+RATE_LIMIT_BACKOFF = 10.0   # Wait 10 seconds on rate limit error
+QUOTE_CACHE_TTL = 5.0       # Cache quotes for 5 seconds
 
 
 class KiteService:
@@ -31,22 +37,61 @@ class KiteService:
         self.last_api_call = None
         self.failed_api_attempts = 0
         self.max_failed_attempts = 3
+        
+        # Rate limiting
+        self._last_request_time = 0
+        self._rate_limit_until = 0
+        
+        # Quote cache
+        self._quote_cache = {}
+        self._quote_cache_time = {}
+        
+        # Instrument cache to avoid repeated lookups
+        self._instruments_cache = {}  # exchange -> list of instruments
+        self._instrument_tokens = {}  # "exchange:symbol" -> token
+        self._instruments_cache_time = 0
+        self.INSTRUMENTS_CACHE_TTL = 3600  # Cache for 1 hour
+    
+    def _rate_limit(self):
+        """Apply rate limiting between API calls"""
+        now = time.time()
+        
+        # Check if we're in rate limit backoff
+        if now < self._rate_limit_until:
+            sleep_time = self._rate_limit_until - now
+            logger.warning(f"Rate limit backoff: sleeping {sleep_time:.1f}s")
+            time.sleep(sleep_time)
+        
+        # Apply minimum delay between requests
+        elapsed = now - self._last_request_time
+        if elapsed < API_RATE_LIMIT_DELAY:
+            time.sleep(API_RATE_LIMIT_DELAY - elapsed)
+        
+        self._last_request_time = time.time()
+    
+    def _handle_rate_limit(self):
+        """Handle rate limit error with backoff"""
+        self._rate_limit_until = time.time() + RATE_LIMIT_BACKOFF
+        logger.warning(f"Rate limit hit - backing off for {RATE_LIMIT_BACKOFF}s")
     
     def get_profile(self):
         """Get user profile information"""
         try:
+            self._rate_limit()
             profile = self.kite.profile()
             self.last_api_call = datetime.now(IST)
             self.failed_api_attempts = 0
             return profile
         except Exception as e:
+            if "Too many requests" in str(e):
+                self._handle_rate_limit()
             logger.error(f"Error fetching profile: {e}")
             self._handle_api_failure()
             return None
     
     def get_quote(self, exchange, symbol):
         """
-        Get current quote for a symbol
+        Get current quote for a symbol (with caching)
         
         Args:
             exchange: NSE, BSE, MCX, NCDEX
@@ -57,18 +102,67 @@ class KiteService:
         """
         try:
             instrument_key = f"{exchange}:{symbol}"
+            
+            # Check cache first
+            now = time.time()
+            if instrument_key in self._quote_cache:
+                cache_age = now - self._quote_cache_time.get(instrument_key, 0)
+                if cache_age < QUOTE_CACHE_TTL:
+                    return self._quote_cache[instrument_key]
+            
+            self._rate_limit()
             quote = self.kite.quote([instrument_key])
             self.last_api_call = datetime.now(IST)
             self.failed_api_attempts = 0
             
-            # The response is directly indexed by instrument_key
+            # Cache the result
             if instrument_key in quote:
+                self._quote_cache[instrument_key] = quote[instrument_key]
+                self._quote_cache_time[instrument_key] = now
                 return quote[instrument_key]
             return None
         except Exception as e:
+            if "Too many requests" in str(e):
+                self._handle_rate_limit()
             logger.error(f"Error fetching quote for {symbol}: {e}")
             self._handle_api_failure()
             return None
+    
+    def get_quotes_batch(self, instruments):
+        """
+        Get quotes for multiple instruments in a SINGLE API call (max 500)
+        
+        Args:
+            instruments: List of "EXCHANGE:SYMBOL" strings, e.g., ["NSE:TATASTEEL", "NSE:HDFCBANK"]
+        
+        Returns:
+            Dict of instrument_key -> quote data
+        """
+        try:
+            if not instruments:
+                return {}
+            
+            # Kite allows max 500 instruments per quote call
+            instruments = instruments[:500]
+            
+            self._rate_limit()
+            quotes = self.kite.quote(instruments)
+            self.last_api_call = datetime.now(IST)
+            self.failed_api_attempts = 0
+            
+            # Cache all results
+            now = time.time()
+            for key, quote in quotes.items():
+                self._quote_cache[key] = quote
+                self._quote_cache_time[key] = now
+            
+            return quotes
+        except Exception as e:
+            if "Too many requests" in str(e):
+                self._handle_rate_limit()
+            logger.error(f"Error fetching batch quotes: {e}")
+            self._handle_api_failure()
+            return {}
     
     def get_historical_data(self, instrument_token, from_date, to_date, interval):
         """
@@ -84,6 +178,7 @@ class KiteService:
             List of candle data dicts
         """
         try:
+            self._rate_limit()
             data = self.kite.historical_data(
                 instrument_token,
                 from_date,
@@ -94,13 +189,15 @@ class KiteService:
             self.failed_api_attempts = 0
             return data
         except Exception as e:
+            if "Too many requests" in str(e):
+                self._handle_rate_limit()
             logger.error(f"Error fetching historical data: {e}")
             self._handle_api_failure()
             return []
     
     def get_instruments(self, exchange):
         """
-        Get all instruments for an exchange
+        Get all instruments for an exchange (with caching)
         
         Args:
             exchange: "NSE", "BSE", "MCX", "NCDEX"
@@ -109,18 +206,33 @@ class KiteService:
             List of instrument dicts
         """
         try:
+            # Check cache first
+            now = time.time()
+            if exchange in self._instruments_cache and \
+               (now - self._instruments_cache_time) < self.INSTRUMENTS_CACHE_TTL:
+                return self._instruments_cache[exchange]
+            
+            # Fetch from API with rate limiting
+            self._rate_limit()
             instruments = self.kite.instruments(exchange)
             self.last_api_call = datetime.now(IST)
             self.failed_api_attempts = 0
+            
+            # Cache the result
+            self._instruments_cache[exchange] = instruments
+            self._instruments_cache_time = now
+            
             return instruments
         except Exception as e:
+            if "Too many requests" in str(e):
+                self._handle_rate_limit()
             logger.error(f"Error fetching instruments: {e}")
             self._handle_api_failure()
             return []
     
     def find_instrument_token(self, exchange, symbol):
         """
-        Find instrument token for a given symbol
+        Find instrument token for a given symbol (with caching)
         
         Args:
             exchange: "NSE", "BSE", "MCX", "NCDEX"
@@ -129,11 +241,20 @@ class KiteService:
         Returns:
             Instrument token (int) or None
         """
+        # Check token cache first
+        cache_key = f"{exchange}:{symbol}"
+        if cache_key in self._instrument_tokens:
+            return self._instrument_tokens[cache_key]
+        
         try:
             instruments = self.get_instruments(exchange)
             for instrument in instruments:
                 if instrument.get('tradingsymbol') == symbol:
-                    return instrument.get('instrument_token')
+                    token = instrument.get('instrument_token')
+                    # Cache the token
+                    self._instrument_tokens[cache_key] = token
+                    return token
+            
             logger.warning(f"Instrument {symbol} not found on {exchange}")
             return None
         except Exception as e:
@@ -186,7 +307,7 @@ class KiteService:
             return None
     
     def place_bracket_order(self, symbol, transaction_type, quantity, price,
-                           takeprifit_value, stoploss_value, parent_order_id=None):
+                           takeprofit_value, stoploss_value, parent_order_id=None):
         """
         Place a bracket order (order with predefined profit and stoploss)
         
@@ -195,7 +316,7 @@ class KiteService:
             transaction_type: "BUY" or "SELL"
             quantity: Number of shares
             price: Entry price
-            takeprifit_value: Profit target price
+            takeprofit_value: Profit target price
             stoploss_value: Stoploss price
             parent_order_id: Parent order ID (for modifications)
         
@@ -213,8 +334,8 @@ class KiteService:
                 product=config.TRADE_TYPE,
                 order_type="LIMIT",
                 validity="DAY",
-                takeprifit_value=takeprifit_value,
-                stoploss_value=stoploss_value
+                squareoff=takeprofit_value,
+                stoploss=stoploss_value
             )
             
             self.last_api_call = datetime.now(IST)

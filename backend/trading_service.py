@@ -3,7 +3,7 @@ import threading
 import logging
 from datetime import datetime, date, timedelta
 import pyotp
-from models import db, Trade, DailyStats, BotLog
+from models import db, User, Trade, DailyStats, BotLog
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +144,27 @@ class TradingService:
                 logger.info(f"Initializing trading bot for user {user_id}")
                 logger.info(f"API Key: {api_key}, Access Token: {access_token}")
                 
+                # === AUTO-LOGIN: Validate token and refresh if expired ===
+                try:
+                    from app_files.kite_session import get_kite_session, _is_auto_login_enabled
+                    if _is_auto_login_enabled():
+                        logger.info("Auto-login enabled — validating/refreshing access token...")
+                        _, fresh_token = get_kite_session()
+                        if fresh_token != access_token:
+                            access_token = fresh_token
+                            # Sync fresh token back to database
+                            user = User.query.get(user_id)
+                            if user:
+                                user.kite_access_token = access_token
+                                db.session.commit()
+                            logger.info("✅ Access token auto-refreshed and saved to DB")
+                            BotLog.create_log(user_id, 'AUTH', 'Access token auto-refreshed via auto-login', 'INFO')
+                        else:
+                            logger.info("✅ Existing access token is still valid")
+                except Exception as auto_err:
+                    logger.warning(f"Auto-login check failed: {auto_err} — proceeding with provided token")
+                    BotLog.create_log(user_id, 'AUTH', f'Auto-login failed: {auto_err}', 'WARNING')
+                
                 # Initialize daily stats if not exists
                 today = get_ist_time().date()
                 daily_stats = DailyStats.query.filter_by(
@@ -169,7 +190,7 @@ class TradingService:
                 from app_files.bot_kite import KiteApp
                 from app_files.kite_service import KiteService
                 
-                # Initialize Kite service with user credentials
+                # Initialize Kite service with (possibly refreshed) credentials
                 kite_service = KiteApp(api_key, access_token, user_id)
                 
                 # Store reference to bot instance

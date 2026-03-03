@@ -6,6 +6,7 @@ This version uses Kite Connect API from Zerodha instead of Shoonya API
 All trading logic remains the same, only API calls are different
 """
 
+import os
 import time
 import datetime
 import pytz
@@ -117,6 +118,105 @@ class KiteApp:
         # Daily tracking
         self.daily_loss_pct = 0.0
         self.daily_pnl = 0.0
+        
+        # ===== MULTI-STOCK PORTFOLIO TRACKING =====
+        self.active_positions = {}  # Dict of symbol -> position data
+        self.pending_signals = []   # List of signals waiting for allocation
+        self.allocated_capital = 0  # Total capital currently allocated
+        self.position_pnls = {}     # Track P&L per position
+        
+        # Immediately restore any existing positions from broker
+        self.restore_positions_from_broker()
+        
+    def restore_positions_from_broker(self):
+        """
+        Restore active positions from Kite broker on startup.
+        This ensures stop loss monitoring works after bot restart.
+        """
+        try:
+            logger.info("\n🔄 CHECKING FOR EXISTING POSITIONS ON BROKER...")
+            
+            positions = self.kite.get_positions()
+            if not positions:
+                logger.info("   No position data from broker")
+                return
+            
+            day_positions = positions.get('day', [])
+            
+            # Get symbols we're monitoring
+            monitored_symbols = {s["symbol"] for s in config.SYMBOLS_TO_MONITOR}
+            
+            restored_count = 0
+            for pos in day_positions:
+                symbol = pos.get('tradingsymbol', '')
+                quantity = pos.get('quantity', 0)
+                
+                # Skip if no open position or not in our watchlist
+                if quantity == 0 or symbol not in monitored_symbols:
+                    continue
+                
+                entry_price = pos.get('average_price', 0)
+                exchange = pos.get('exchange', 'NSE')
+                
+                # Determine side
+                side = "BUY" if quantity > 0 else "SELL"
+                qty = abs(quantity)
+                
+                # Calculate a basic stop loss (can be improved with DB lookup)
+                # Default: 0.5% below/above entry
+                sl_buffer = entry_price * 0.005
+                if side == "BUY":
+                    sl_price = entry_price - sl_buffer
+                else:
+                    sl_price = entry_price + sl_buffer
+                
+                # Try to get better SL from database
+                try:
+                    if self.user_id:
+                        from backend.models import Trade
+                        db_trade = Trade.query.filter_by(
+                            user_id=self.user_id,
+                            symbol=symbol,
+                            status='OPEN'
+                        ).order_by(Trade.entry_time.desc()).first()
+                        
+                        if db_trade and db_trade.stoploss_price:
+                            sl_price = db_trade.stoploss_price
+                            logger.info(f"   📊 Found SL from DB: ₹{sl_price:.2f}")
+                except Exception as e:
+                    logger.warning(f"   Could not fetch SL from DB: {e}")
+                
+                # Restore position
+                self.active_positions[symbol] = {
+                    'side': side,
+                    'quantity': qty,
+                    'remaining_quantity': qty,  # For monitoring compatibility
+                    'entry_price': entry_price,
+                    'sl_price': sl_price,
+                    'exchange': exchange,
+                    'token': pos.get('instrument_token'),
+                    'restored': True,
+                    # These must match the monitoring loop field names:
+                    'partial_booked_1': False,  # 0.5R target
+                    'partial_booked_2': False,  # 1R target
+                    'sl_at_breakeven': False,   # SL moved to entry
+                    'realized_pnl': 0.0         # Track partial exit P&L
+                }
+                
+                self.allocated_capital += entry_price * qty
+                restored_count += 1
+                
+                logger.info(f"   ✅ RESTORED: {symbol}")
+                logger.info(f"      Side: {side}, Qty: {qty}, Entry: ₹{entry_price:.2f}, SL: ₹{sl_price:.2f}")
+            
+            if restored_count > 0:
+                logger.info(f"\n🔔 RESTORED {restored_count} POSITION(S) - SL monitoring active!")
+                self.log_to_db(f"🔄 Restored {restored_count} existing position(s) on startup")
+            else:
+                logger.info("   No open positions in monitored symbols")
+                
+        except Exception as e:
+            logger.error(f"Error restoring positions: {e}")
         
     def log_section(self, title):
         """Log a formatted section header"""
@@ -233,7 +333,8 @@ class KiteApp:
             return config.STARTING_CAPITAL
     
     def calculate_dynamic_quantity(self, entry_price):
-        """Calculate quantity dynamically based on actual account balance and leverage"""
+        """Calculate quantity dynamically based on actual account balance and leverage,
+        but NEVER exceed the hardstop capital limit."""
         try:
             # Fetch actual account balance
             if self.account_balance is None:
@@ -248,6 +349,14 @@ class KiteApp:
             leverage_factor = self.leverage if config.USE_LEVERAGE_IN_SIZING else 1
             capital_for_trade = self.account_balance * utilization_percentage * leverage_factor
             
+            # ===== HARDSTOP CAPITAL LIMIT =====
+            # Never exceed the hardstop effective capital limit (₹80,000 by default)
+            hardstop_max = getattr(config, "HARDSTOP_EFFECTIVE_MAX", 80000)
+            if capital_for_trade > hardstop_max:
+                logger.warning(f"⚠️  HARDSTOP LIMIT: Capital ₹{capital_for_trade:,.2f} exceeds max ₹{hardstop_max:,.2f}")
+                capital_for_trade = hardstop_max
+                logger.info(f"   → Capped to HARDSTOP limit: ₹{hardstop_max:,.2f}")
+            
             # Calculate quantity based on final order price
             quantity = int(capital_for_trade / entry_price)
             
@@ -260,6 +369,7 @@ class KiteApp:
             logger.info(f"   Utilization: {utilization_percentage*100:.0f}%")
             logger.info(f"   Leverage Sizing: {leverage_factor}x")
             logger.info(f"   Capital for Trade: ₹{capital_for_trade:,.2f}")
+            logger.info(f"   HARDSTOP Max: ₹{hardstop_max:,.2f}")
             logger.info(f"   Order Price (for sizing): ₹{entry_price:.2f}")
             logger.info(f"   ✓ Calculated Quantity: {quantity} shares")
             logger.info(f"   Total Cost: ₹{quantity * entry_price:,.2f}")
@@ -593,14 +703,18 @@ class KiteApp:
                 self.sl_price = sl_price
                 self.log_trade("BUY", "BUY", price, quantity)
                 
-                # Place stoploss order immediately after buy order
-                logger.info(f"   Placing STOPLOSS order for protection...")
-                sl_order_id = self.place_stoploss_order(symbol, "BUY", quantity, sl_price)
-                if sl_order_id:
-                    self.sl_order_id = sl_order_id  # Store for future updates
-                    logger.info(f"   ✓ Stoploss order placed: {sl_order_id} @ ₹{sl_price}")
-                else:
-                    logger.warning(f"   ⚠️  Failed to place stoploss order - monitoring software SL only")
+                # Place stoploss order only for entry orders (sl_price > 0)
+                # Skip for exit orders (sl_price = 0) and multi-stock mode (uses software SL)
+                if sl_price > 0 and not getattr(config, 'MULTI_STOCK_MODE', False):
+                    logger.info(f"   Placing STOPLOSS order for protection...")
+                    sl_order_id = self.place_stoploss_order(symbol, "BUY", quantity, sl_price)
+                    if sl_order_id:
+                        self.sl_order_id = sl_order_id  # Store for future updates
+                        logger.info(f"   ✓ Stoploss order placed: {sl_order_id} @ ₹{sl_price}")
+                    else:
+                        logger.warning(f"   ⚠️  Failed to place stoploss order - monitoring software SL only")
+                elif sl_price > 0:
+                    logger.info(f"   📊 Multi-stock mode: Using software SL monitoring @ ₹{sl_price}")
                 
                 return order_id
             return None
@@ -630,14 +744,18 @@ class KiteApp:
                 self.sl_price = sl_price
                 self.log_trade("SELL", "SELL", price, quantity)
                 
-                # Place stoploss order immediately after sell order
-                logger.info(f"   Placing STOPLOSS order for protection...")
-                sl_order_id = self.place_stoploss_order(symbol, "SELL", quantity, sl_price)
-                if sl_order_id:
-                    self.sl_order_id = sl_order_id  # Store for future updates
-                    logger.info(f"   ✓ Stoploss order placed: {sl_order_id} @ ₹{sl_price}")
-                else:
-                    logger.warning(f"   ⚠️  Failed to place stoploss order - monitoring software SL only")
+                # Place stoploss order only for entry orders (sl_price > 0)
+                # Skip for exit orders (sl_price = 0) and multi-stock mode (uses software SL)
+                if sl_price > 0 and not getattr(config, 'MULTI_STOCK_MODE', False):
+                    logger.info(f"   Placing STOPLOSS order for protection...")
+                    sl_order_id = self.place_stoploss_order(symbol, "SELL", quantity, sl_price)
+                    if sl_order_id:
+                        self.sl_order_id = sl_order_id  # Store for future updates
+                        logger.info(f"   ✓ Stoploss order placed: {sl_order_id} @ ₹{sl_price}")
+                    else:
+                        logger.warning(f"   ⚠️  Failed to place stoploss order - monitoring software SL only")
+                elif sl_price > 0:
+                    logger.info(f"   📊 Multi-stock mode: Using software SL monitoring @ ₹{sl_price}")
                 
                 return order_id
             return None
@@ -716,7 +834,12 @@ class KiteApp:
         logger.info("📊 FETCHING DATA FOR ALL MONITORED SYMBOLS")
         logger.info("=" * 80)
         
-        for symbol_config in config.SYMBOLS_TO_MONITOR:
+        # Limit number of stocks to scan (to avoid API rate limits)
+        max_stocks = getattr(config, 'MAX_STOCKS_TO_SCAN', 20)
+        symbols_to_process = config.SYMBOLS_TO_MONITOR[:max_stocks]
+        logger.info(f"📊 Scanning top {len(symbols_to_process)} stocks (max: {max_stocks})")
+        
+        for symbol_config in symbols_to_process:
             symbol = symbol_config["symbol"]
             exchange = symbol_config["exchange"]
             
@@ -725,18 +848,11 @@ class KiteApp:
                 logger.info(msg)
                 self.log_to_db(msg)
                 
-                # Skip if API is unavailable - use demo data
+                # Skip if API is unavailable
                 if not self.api_key or not self.access_token:
-                    self.log_to_db(f"   ⚠️  {symbol}: No API credentials - Skipping symbol (real API required for backtesting)")
+                    self.log_to_db(f"   ⚠️  {symbol}: No API credentials - Skipping symbol (real API required)")
                     logger.warning(f"   ⚠️  {symbol}: No API credentials - Skipping symbol")
-                    continue  # Skip this symbol instead of using fake data
-                    # Use demo opening range data (will work with watchlist from API)
-                    vwap = config.DEMO_VWAP if hasattr(config, 'DEMO_VWAP') else 200.0
-                    h = 205.0
-                    l = 195.0
-                    o = 200.0
-                    c = 202.0
-                    token = None
+                    continue  # Skip this symbol - API credentials required
                 else:
                     # Find instrument token
                     token = self.kite.find_instrument_token(exchange, symbol)
@@ -776,6 +892,37 @@ class KiteApp:
                 long_trigger = h + buffer
                 short_trigger = l - buffer
                 
+                # ENHANCEMENT 2: Calculate gap % from previous close (relative strength)
+                gap_pct = 0.0
+                prev_close = 0.0
+                try:
+                    quote = self.kite.get_quote(exchange, symbol)
+                    if quote:
+                        prev_close = quote.get('ohlc', {}).get('close', 0)
+                        if prev_close and prev_close > 0:
+                            gap_pct = ((o - prev_close) / prev_close) * 100
+                            logger.info(f"  📊 {symbol}: Gap {gap_pct:+.2f}% (prev close: ₹{prev_close:.2f}, open: ₹{o:.2f})")
+                except Exception as gap_err:
+                    logger.debug(f"  Could not calculate gap for {symbol}: {gap_err}")
+                
+                # ENHANCEMENT 3: Open position within candle range (directional bias)
+                candle_range = h - l
+                if candle_range > 0:
+                    open_position_in_range = (o - l) / candle_range
+                else:
+                    open_position_in_range = 0.5  # Neutral if no range
+                
+                # Determine open bias from candle structure:
+                # Open near HIGH of range = price opened high then sellers pushed down = BEARISH
+                # Open near LOW of range = price opened low then buyers pushed up = BULLISH
+                strong_zone = getattr(config, 'OPEN_POSITION_STRONG_ZONE', 0.25)
+                if open_position_in_range >= (1 - strong_zone):  # e.g., >= 0.75
+                    open_bias = "SHORT"  # opened near high → bearish candle structure
+                elif open_position_in_range <= strong_zone:  # e.g., <= 0.25
+                    open_bias = "LONG"   # opened near low → bullish candle structure
+                else:
+                    open_bias = "NEUTRAL"
+                
                 symbols_data[symbol] = {
                     "token": token,
                     "exchange": exchange,
@@ -786,10 +933,14 @@ class KiteApp:
                     "vwap": vwap,
                     "long_trigger": long_trigger,
                     "short_trigger": short_trigger,
-                    "buffer": buffer
+                    "buffer": buffer,
+                    "gap_pct": gap_pct,
+                    "prev_close": prev_close,
+                    "open_position_in_range": open_position_in_range,
+                    "open_bias": open_bias
                 }
                 
-                msg = f"  ✓ {symbol} setup complete: Range {l:.2f} - {h:.2f}, VWAP ₹{vwap:.2f}, Buffer ₹{buffer:.2f}, Triggers: {long_trigger:.2f} / {short_trigger:.2f}"
+                msg = f"  ✓ {symbol} setup: Range {l:.2f}-{h:.2f}, VWAP ₹{vwap:.2f}, Buffer ₹{buffer:.2f}, Triggers: {long_trigger:.2f}/{short_trigger:.2f}, Gap: {gap_pct:+.2f}%, OpenBias: {open_bias}"
                 logger.info(msg)
                 self.log_to_db(msg)
                 
@@ -861,6 +1012,11 @@ class KiteApp:
         logger.info(f"📈 NIFTY Bias: {self.nifty_bias}")
         self.log_to_db(f"📈 NIFTY Bias: {self.nifty_bias}")
         
+        # ===== MULTI-STOCK MODE: Scan all, score, allocate, execute multiple =====
+        if getattr(config, 'MULTI_STOCK_MODE', False):
+            return self.run_multi_stock_trading(symbols_data)
+        
+        # ===== SINGLE-STOCK MODE (Original): First signal wins =====
         last_debug_log_time = get_ist_time()
         while not signal_found and not self.should_stop:
             now = get_ist_time()
@@ -992,6 +1148,22 @@ class KiteApp:
                             self.log_skip(f"{symbol}: Volume not 2x in SOFT window")
                             continue
                     
+                    # ENHANCEMENT 2: Gap alignment filter - skip if gap contradicts breakout
+                    if getattr(config, 'USE_GAP_FILTER', False) and getattr(config, 'GAP_CONTRADICTION_SKIP', False):
+                        gap_pct = data.get('gap_pct', 0)
+                        if gap_pct < -config.GAP_ALIGNMENT_MIN_PCT:
+                            logger.info(f"   ⚠️  {symbol}: Gap {gap_pct:+.2f}% contradicts LONG signal - SKIP")
+                            self.log_skip(f"{symbol}: Gap {gap_pct:+.2f}% contradicts LONG")
+                            continue
+                    
+                    # ENHANCEMENT 3: Open position bias filter - skip if open near low for LONG
+                    if getattr(config, 'USE_OPEN_POSITION_FILTER', False) and getattr(config, 'OPEN_POSITION_SKIP_CONTRADICTION', False):
+                        open_bias = data.get('open_bias', 'NEUTRAL')
+                        if open_bias == "SHORT":
+                            logger.info(f"   ⚠️  {symbol}: Open near candle low (bias SHORT) contradicts LONG - SKIP")
+                            self.log_skip(f"{symbol}: Open position bias SHORT contradicts LONG")
+                            continue
+                    
                     # IMPROVEMENT #6: NIFTY Filter - only LONG if NIFTY > NIFTY_VWAP
                     if self.is_nifty_bias_blocking("BUY"):
                         logger.info(f"   ⚠️  {symbol}: NIFTY bias blocking BUY - SKIP")
@@ -1041,6 +1213,22 @@ class KiteApp:
                         if not volume_confirmed:
                             logger.info(f"   ⚠️  {symbol}: Volume not 2x in SOFT window - SKIP")
                             self.log_skip(f"{symbol}: Volume not 2x in SOFT window")
+                            continue
+                    
+                    # ENHANCEMENT 2: Gap alignment filter - skip if gap contradicts short
+                    if getattr(config, 'USE_GAP_FILTER', False) and getattr(config, 'GAP_CONTRADICTION_SKIP', False):
+                        gap_pct = data.get('gap_pct', 0)
+                        if gap_pct > config.GAP_ALIGNMENT_MIN_PCT:
+                            logger.info(f"   ⚠️  {symbol}: Gap {gap_pct:+.2f}% contradicts SHORT signal - SKIP")
+                            self.log_skip(f"{symbol}: Gap {gap_pct:+.2f}% contradicts SHORT")
+                            continue
+                    
+                    # ENHANCEMENT 3: Open position bias filter - skip if open near high for SHORT
+                    if getattr(config, 'USE_OPEN_POSITION_FILTER', False) and getattr(config, 'OPEN_POSITION_SKIP_CONTRADICTION', False):
+                        open_bias = data.get('open_bias', 'NEUTRAL')
+                        if open_bias == "LONG":
+                            logger.info(f"   ⚠️  {symbol}: Open near candle high (bias LONG) contradicts SHORT - SKIP")
+                            self.log_skip(f"{symbol}: Open position bias LONG contradicts SHORT")
                             continue
                     
                     # IMPROVEMENT #6: NIFTY Filter - only SHORT if NIFTY < NIFTY_VWAP
@@ -1144,8 +1332,38 @@ class KiteApp:
             logger.error("Failed to place order. Skipping trade.")
             return False
         
+        # 🔧 CRITICAL FIX: Update entry_price with actual filled price
+        # (For MARKET orders, actual fill price may differ from limit_price)
+        actual_entry_price = self.entry_price if self.entry_price else entry_price
+        
+        # ⚠️ If actual fill price differs from signal price, RECALCULATE SL & targets
+        if abs(actual_entry_price - entry_price) > 0.01:  # More than 1 paise difference
+            logger.info(f"   💡 Actual Entry Price (₹{actual_entry_price:.2f}) differs from Signal Price (₹{entry_price:.2f})")
+            logger.info(f"   🔄 Recalculating SL & targets based on ACTUAL fill price...")
+            
+            # Recalculate SL using actual entry price
+            current_candle = self.get_latest_5min_candle(selected_symbol_data["token"])
+            if current_candle:
+                o, h_5, l_5, c_5, v, _ = current_candle
+                sl_price = self.calculate_dynamic_sl(entry_side, selected_symbol_data["vwap"], h_5, l_5)
+            else:
+                sl_price = selected_symbol_data["vwap"]
+            
+            # Apply tightening factor using ACTUAL entry price
+            sl_price = self.apply_stoploss_distance_factor(actual_entry_price, sl_price, entry_side)
+            self.entry_price = actual_entry_price
+            entry_price = actual_entry_price
+        
+        # Calculate target_price BEFORE saving to DB
+        risk = abs(entry_price - sl_price)
+        if config.PROFIT_TARGET_TYPE == "ratio":
+            first_reward = risk * getattr(config, 'PARTIAL_BOOKING_FIRST_TARGET_R', 0.5)
+            target_price_for_db = entry_price + first_reward if entry_side == "BUY" else entry_price - first_reward
+        else:
+            target_price_for_db = entry_price * (1 + config.PROFIT_TARGET_RATIO / 100) if entry_side == "BUY" else entry_price * (1 - config.PROFIT_TARGET_RATIO / 100)
+        
         # 🆕 SAVE TRADE TO DATABASE IMMEDIATELY for real-time sync
-        self.trade_db_id = self.save_trade_to_db(entry_side, selected_symbol, quantity, entry_price, sl_price, target_price)
+        self.trade_db_id = self.save_trade_to_db(entry_side, selected_symbol, quantity, entry_price, sl_price, target_price_for_db)
         
         # Record trade (for tracking daily stats and multi-trade logic)
         self.num_trades_today += 1  # IMPROVEMENT #5: Track number of trades
@@ -1184,36 +1402,65 @@ class KiteApp:
             first_reward = risk * getattr(config, 'PARTIAL_BOOKING_FIRST_TARGET_R', 0.5)
             target_price = entry_price + first_reward if entry_side == "BUY" else entry_price - first_reward
             
-            # Second target at 1R (take 50% at breakeven SL)
+            # Second target at 1R (take 20% + move SL to breakeven)
             second_reward = risk * getattr(config, 'PARTIAL_BOOKING_SECOND_TARGET_R', 1.0)
             second_target_price = entry_price + second_reward if entry_side == "BUY" else entry_price - second_reward
             
-            # Final target at 2R (for end of day - hold remaining 25%)
+            # Final target at 2R (for end of day - hold remaining 55% runner)
             final_reward = risk * config.PROFIT_TARGET_RATIO
             eod_target_price = entry_price + final_reward if entry_side == "BUY" else entry_price - final_reward
 
         first_close_pct = getattr(config, 'PARTIAL_BOOKING_FIRST_CLOSE_PCT', 0.25)
-        second_close_pct = getattr(config, 'PARTIAL_BOOKING_SECOND_CLOSE_PCT', 0.50)
-        eod_close_pct = getattr(config, 'PARTIAL_BOOKING_EOD_CLOSE_PCT', 0.25)
+        second_close_pct = getattr(config, 'PARTIAL_BOOKING_SECOND_CLOSE_PCT', 0.20)
+        eod_close_pct = getattr(config, 'PARTIAL_BOOKING_EOD_CLOSE_PCT', 0.55)
         
         first_close_qty = int(initial_quantity * first_close_pct)
         second_close_qty = int(initial_quantity * second_close_pct)
         eod_close_qty = int(initial_quantity * eod_close_pct)
+        
+        # ✅ FIX BUG #2: Distribute remainder to prevent losing shares to rounding
+        # Example: qty=75 → int(75×0.25)=18, int(75×0.20)=15, int(75×0.55)=41 = 74 total
+        # Remainder: 75 - 74 = 1 share LOST! This fix distributes remainder to Stage 3 runner
+        remainder = initial_quantity - (first_close_qty + second_close_qty + eod_close_qty)
+        if remainder > 0:
+            eod_close_qty += remainder  # Distribute remainder to Stage 3 runner (55% EOD leg)
+            logger.info(f"   ✅ Quantity Optimization: {remainder} shares distributed (rounding fix)")
 
-        if initial_quantity >= 2 and first_close_qty == 0:
+        # FIX: Ensure at least 1 share is closable at each stage for ANY quantity
+        # Special handling for small quantities:
+        # qty=1: Close 1 at Stage 1 (100% of position)  
+        # qty=2: Close 1 at Stage 1, 1 at Stage 2
+        # qty=3: Close 1 at Stage 1, 1 at Stage 2, 1 at Stage 3
+        # qty>=4: Distribute 25%, 50%, 25%
+        
+        if initial_quantity == 1:
             first_close_qty = 1
-        if initial_quantity >= 4 and second_close_qty == 0:
+            second_close_qty = 0
+            eod_close_qty = 0
+        elif initial_quantity == 2:
+            first_close_qty = 1
             second_close_qty = 1
-
-        if first_close_qty + second_close_qty >= initial_quantity:
-            overflow = (first_close_qty + second_close_qty) - (initial_quantity - 1)
-            if overflow > 0 and second_close_qty > 0:
-                reduce_second = min(second_close_qty, overflow)
-                second_close_qty -= reduce_second
-                overflow -= reduce_second
-            if overflow > 0 and first_close_qty > 0:
-                reduce_first = min(first_close_qty, overflow)
-                first_close_qty -= reduce_first
+            eod_close_qty = 0
+        elif initial_quantity == 3:
+            first_close_qty = 1
+            second_close_qty = 1
+            eod_close_qty = 1
+        else:  # qty >= 4
+            if first_close_qty == 0:
+                first_close_qty = 1
+            if second_close_qty == 0:
+                second_close_qty = 1
+            
+            # Only apply overflow check for qty >= 4
+            if first_close_qty + second_close_qty >= initial_quantity:
+                overflow = (first_close_qty + second_close_qty) - (initial_quantity - 1)
+                if overflow > 0 and second_close_qty > 0:
+                    reduce_second = min(second_close_qty, overflow)
+                    second_close_qty -= reduce_second
+                    overflow -= reduce_second
+                if overflow > 0 and first_close_qty > 0:
+                    reduce_first = min(first_close_qty, overflow)
+                    first_close_qty -= reduce_first
 
         base_risk = abs(entry_price - sl_price)
         
@@ -1224,10 +1471,10 @@ class KiteApp:
             logger.info(f"            └─→ Take quick profit (SL still tight, remaining protected)")
             if second_target_price:
                 logger.info(f"   STAGE 2 @ 1.0R ({second_close_pct*100:.0f}% qty): ₹{second_target_price:.2f}")
-                logger.info(f"            └─→ Lock majority at ideal 1:1 risk/reward + Move SL to entry (final 25% GUARANTEED)")
+                logger.info(f"            └─→ Lock 20% at 1:1 risk/reward + Move SL to entry (remaining {eod_close_pct*100:.0f}% GUARANTEED)")
             if eod_target_price:
                 logger.info(f"   STAGE 3 @ 2.0R ({eod_close_pct*100:.0f}% qty): ₹{eod_target_price:.2f}")
-                logger.info(f"            └─→ Final 25% exit OR auto-exit at 3:25 PM (potential 2R gain)")
+                logger.info(f"            └─→ Runner {eod_close_pct*100:.0f}% exit at 2R OR auto-exit at 3:25 PM")
         elif target_price:
             logger.info(f"   Profit Target: ₹{target_price:.2f}")
         logger.info(f"   Initial Stoploss (TIGHT): ₹{sl_price:.2f} (50% closer to entry)")
@@ -1235,13 +1482,36 @@ class KiteApp:
         logger.info("")
         
         # Monitoring loop
+        logger.info(f"") 
+        logger.info(f"🔄 ENTERING MONITORING LOOP for {selected_symbol}:")
+        logger.info(f"   Initial Setup: entry_side={entry_side}, entry_price=₹{entry_price:.2f}, sl_price=₹{sl_price:.2f}")
+        logger.info(f"   Target 1: ₹{target_price:.2f if target_price else 'N/A'} (qty to close: {first_close_qty})")
+        logger.info(f"   Target 2: ₹{second_target_price:.2f if second_target_price else 'N/A'} (qty to close: {second_close_qty})")
+        logger.info(f"   EOD Target: ₹{eod_target_price:.2f if eod_target_price else 'N/A'} (qty to close: {eod_close_qty})")
+        logger.info(f"   Total Position: {initial_quantity} shares, remaining: {self.remaining_quantity}")
+        logger.info(f"")
+        
+        # Log initial monitoring state (debug logging removed for production)
+        logger.debug(f"[MONITORING START] Symbol={selected_symbol}, Side={entry_side}, Entry=₹{entry_price:.2f}, Target1=₹{target_price:.2f if target_price else 'N/A'}")
+        
         while True:
             now = get_ist_time()
+            
+            # Get live price FIRST before any other checks
+            price = self.get_live_price(token, selected_symbol)
+            if price:
+                last_price = price
+            else:
+                # If price fetch fails, skip this iteration
+                time.sleep(5)  # Check more frequently on error
+                continue
+            
+            logger.info(f"📊 Monitoring {selected_symbol}: Price=₹{price:.2f}, Time={now.strftime('%H:%M:%S')}")
             
             # Auto-exit at 3:25 PM
             if now.hour == 15 and now.minute >= 25:
                 logger.warning("⏰ Market closing time - Auto-exiting position")
-                exit_qty = self.remaining_quantity if (self.remaining_quantity and self.remaining_quantity > 0) else quantity
+                exit_qty = abs(self.remaining_quantity) if (self.remaining_quantity and abs(self.remaining_quantity) > 0) else quantity
                 if exit_qty > 0:  # Only close if there's remaining quantity
                     exit_order = self.close_position(selected_symbol, exit_qty, last_price)
                     if exit_order:
@@ -1266,7 +1536,7 @@ class KiteApp:
                 can_continue = self.check_daily_loss_limit()
                 if not can_continue:
                     logger.error("IMPROVEMENT #9: Daily Loss Limit Hit! Auto-shutdown initiated")
-                    exit_qty = self.remaining_quantity if (self.remaining_quantity and self.remaining_quantity > 0) else quantity
+                    exit_qty = abs(self.remaining_quantity) if (self.remaining_quantity and abs(self.remaining_quantity) > 0) else quantity
                     if exit_qty > 0:  # Only close if there's remaining quantity
                         exit_order = self.close_position(selected_symbol, exit_qty, last_price)
                         if exit_order:
@@ -1286,8 +1556,7 @@ class KiteApp:
                                 )
                     return False  # Stop trading for the day
             
-            # Get live price
-            price = self.get_live_price(token, selected_symbol)
+            # Price already fetched at top of loop, reuse it
             if price:
                 last_price = price
 
@@ -1298,13 +1567,15 @@ class KiteApp:
                         atr_value = self.get_cached_atr(token, config.ATR_TRAIL_REFRESH_SEC)
                         if atr_value and atr_value > 0:
                             trail_distance = atr_value * config.ATR_TRAIL_MULTIPLIER
+                            # Use remaining_quantity (not original quantity) for SL order after partial exits
+                            sl_qty = abs(self.remaining_quantity) if self.remaining_quantity else quantity
                             if entry_side == "BUY":
                                 new_sl = price - trail_distance
                                 if new_sl > sl_price:
                                     sl_price = new_sl
                                     logger.info(f"🔁 ATR Trailing SL updated (LONG): ₹{sl_price:.2f}")
-                                    # Update stoploss order
-                                    new_sl_id = self.place_stoploss_order(selected_symbol, entry_side, quantity, sl_price)
+                                    # Update stoploss order with correct remaining quantity
+                                    new_sl_id = self.place_stoploss_order(selected_symbol, entry_side, sl_qty, sl_price)
                                     if new_sl_id:
                                         self.sl_order_id = new_sl_id
                             else:
@@ -1312,8 +1583,8 @@ class KiteApp:
                                 if new_sl < sl_price:
                                     sl_price = new_sl
                                     logger.info(f"🔁 ATR Trailing SL updated (SHORT): ₹{sl_price:.2f}")
-                                    # Update stoploss order
-                                    new_sl_id = self.place_stoploss_order(selected_symbol, entry_side, quantity, sl_price)
+                                    # Update stoploss order with correct remaining quantity
+                                    new_sl_id = self.place_stoploss_order(selected_symbol, entry_side, sl_qty, sl_price)
                                     if new_sl_id:
                                         self.sl_order_id = new_sl_id
                 
@@ -1327,18 +1598,40 @@ class KiteApp:
                     
                     # Target 1: Close 25% at 0.5R (QUICK PROFIT TAKING)
                     current_quantity = self.remaining_quantity if self.remaining_quantity else quantity
-                    if (not first_partial_booked and target_price and first_close_qty > 0 and current_quantity > 1 and
-                        ((entry_side == "BUY" and price >= target_price) or (entry_side == "SELL" and price <= target_price))):
+                    # FIX: For SHORT positions, quantity might be negative from API, use absolute value
+                    current_quantity = abs(current_quantity)
+                    
+                    # Check Stage 1 exit conditions
+                    cond1 = not first_partial_booked
+                    cond2 = target_price is not None
+                    cond3 = first_close_qty > 0
+                    cond4 = current_quantity > 0
+                    cond5 = (entry_side == "BUY" and price >= target_price) or (entry_side == "SELL" and price <= target_price)
+                    
+                    # Log conditions at debug level (verbose logging)
+                    logger.debug(f"Stage 1 Check: booked={first_partial_booked}, target={target_price}, price={price:.2f}")
+                    
+                    if (cond1 and cond2 and cond3 and cond4 and cond5):
+                        logger.info(f"🎯🎯🎯 ALL CONDITIONS MET! EXECUTING STAGE 1 EXIT 🎯🎯🎯")
                         close_qty = min(first_close_qty, max(current_quantity - 1, 0))
+                        if close_qty == 0:
+                            close_qty = 1  # At least close 1 share if available
                         if close_qty > 0:
+                            exit_side = "SELL" if entry_side == "BUY" else "BUY"
                             logger.info(f"🎯 TARGET 1 @ 0.5R HIT! Closing {close_qty} shares ({first_close_pct*100:.0f}%) at ₹{price:.2f} - QUICK PROFIT")
+                            logger.info(f"   Placing {exit_side} order to close {entry_side} position: symbol={selected_symbol}, qty={close_qty}, price={price:.2f}")
                             exit_order = self.close_position(selected_symbol, close_qty, price)
+                            if not exit_order:
+                                logger.error(f"   ❌ FAILED to place close order! Order ID is None")
                             if exit_order:
                                 partial_pnl = (price - entry_price) * close_qty if entry_side == "BUY" else (entry_price - price) * close_qty
                                 realized_pnl += partial_pnl
                                 logger.info(f"   ✓ Partial P&L (Target 1): ₹{partial_pnl:.2f}")
                                 first_partial_booked = True
-                                self.remaining_quantity = current_quantity - close_qty
+                                # FIX: Handle both positive and negative remaining_quantity
+                                self.remaining_quantity = abs(current_quantity) - close_qty
+                                if self.remaining_quantity < 0:
+                                    self.remaining_quantity = 0
                                 
                                 # Remaining 75% still has tight SL, will move to entry at 1R target
                                 logger.info(f"   Remaining {self.remaining_quantity} shares ({(self.remaining_quantity/initial_quantity)*100:.0f}%) still running with SL at ₹{sl_price:.2f}")
@@ -1360,21 +1653,39 @@ class KiteApp:
                                         pnl=realized_pnl
                                     )
 
-                    # Target 2: Close 50% at 1.0R (MAIN EXIT - LOCK MAJORITY AT IDEAL 1:1 RISK/REWARD)
+                    # Target 2: Close 20% at 1.0R (LOCK PROFIT + MOVE SL TO BREAKEVEN)
                     current_quantity = self.remaining_quantity if self.remaining_quantity else quantity
-                    if (first_partial_booked and not second_partial_booked and second_target_price and second_close_qty > 0 and current_quantity > 1 and
+                    # FIX: For SHORT positions, quantity might be negative from API, use absolute value
+                    current_quantity = abs(current_quantity)
+                    
+                    # DEBUG: Check if this condition is blocking
+                    if first_partial_booked and not second_partial_booked and second_target_price:
+                        cond_check_2 = (entry_side == "BUY" and price >= second_target_price) or (entry_side == "SELL" and price <= second_target_price)
+                        if cond_check_2:
+                            logger.info(f"🔍 Stage 2 Ready: price={price:.2f} vs target={second_target_price:.2f}, qty={current_quantity}, second_close_qty={second_close_qty}, entry_side={entry_side}")
+                    
+                    if (first_partial_booked and not second_partial_booked and second_target_price and second_close_qty > 0 and current_quantity > 0 and
                         ((entry_side == "BUY" and price >= second_target_price) or (entry_side == "SELL" and price <= second_target_price))):
                         close_qty = min(second_close_qty, max(current_quantity - 1, 0))
+                        if close_qty == 0:
+                            close_qty = 1  # At least close 1 share if available
                         if close_qty > 0:
-                            logger.info(f"🎯 TARGET 2 @ 1.0R HIT! Closing {close_qty} shares ({second_close_pct*100:.0f}%) at ₹{price:.2f} - LOCK MAJORITY")
+                            exit_side = "SELL" if entry_side == "BUY" else "BUY"
+                            logger.info(f"🎯 TARGET 2 @ 1.0R HIT! Closing {close_qty} shares ({second_close_pct*100:.0f}%) at ₹{price:.2f} - LOCK PROFIT + BREAKEVEN SL")
+                            logger.info(f"   Placing {exit_side} order to close {entry_side} position: symbol={selected_symbol}, qty={close_qty}, price={price:.2f}")
                             exit_order = self.close_position(selected_symbol, close_qty, price)
+                            if not exit_order:
+                                logger.error(f"   ❌ FAILED to place close order! Order ID is None")
                             if exit_order:
                                 partial_pnl = (price - entry_price) * close_qty if entry_side == "BUY" else (entry_price - price) * close_qty
                                 realized_pnl += partial_pnl
                                 logger.info(f"   ✓ Partial P&L (Target 2): ₹{partial_pnl:.2f}")
                                 second_partial_booked = True
-                                self.remaining_quantity = current_quantity - close_qty
-                                # 🔒 NOW MOVE SL TO ENTRY - Final 25% is GUARANTEED PROFIT
+                                # FIX: Handle both positive and negative remaining_quantity
+                                self.remaining_quantity = abs(current_quantity) - close_qty
+                                if self.remaining_quantity < 0:
+                                    self.remaining_quantity = 0
+                                # 🔒 NOW MOVE SL TO ENTRY - Remaining 55% runner is GUARANTEED PROFIT
                                 old_sl = sl_price
                                 sl_price = entry_price
                                 self.sl_moved_to_breakeven = True
@@ -1396,8 +1707,66 @@ class KiteApp:
                                         pnl=realized_pnl
                                     )
                 
+                # STAGE 3: Close remaining 55% runner at 2.0R OR 3:25 PM (EOD)
+                if config.USE_PARTIAL_BOOKING and second_partial_booked and not self.partial_booked_75pct and eod_target_price and eod_close_qty > 0:
+                    current_quantity = self.remaining_quantity if self.remaining_quantity else quantity
+                    current_quantity = abs(current_quantity)
+                    
+                    # Check if we hit Stage 3 target OR approaching market close (3:20 PM for safety)
+                    time_approaching_eod = now.hour == 15 and now.minute >= 20
+                    target_hit = (entry_side == "BUY" and price >= eod_target_price) or (entry_side == "SELL" and price <= eod_target_price)
+                    
+                    if current_quantity > 0 and (target_hit or time_approaching_eod):
+                        close_qty = min(eod_close_qty, current_quantity)
+                        if close_qty == 0:
+                            close_qty = current_quantity  # Close all remaining if calculated qty is 0
+                        
+                        exit_reason = "Stage 3 Target Hit @ 2.0R" if target_hit else "EOD Exit (3:20 PM)"
+                        logger.info(f"🎯 TARGET 3 @ 2.0R HIT! Closing remaining {close_qty} shares ({(close_qty/initial_quantity)*100:.0f}%) at ₹{price:.2f} - {exit_reason}")
+                        logger.info(f"   Placing order to close position: symbol={selected_symbol}, qty={close_qty}, price={price:.2f}")
+                        
+                        exit_order = self.close_position(selected_symbol, close_qty, price)
+                        if not exit_order:
+                            logger.error(f"   ❌ FAILED to place close order! Order ID is None")
+                        if exit_order:
+                            partial_pnl = (price - entry_price) * close_qty if entry_side == "BUY" else (entry_price - price) * close_qty
+                            realized_pnl += partial_pnl
+                            logger.info(f"   ✓ Partial P&L (Target 3): ₹{partial_pnl:.2f}")
+                            logger.info(f"   ✓ Total Realized P&L: ₹{realized_pnl:.2f}")
+                            
+                            self.remaining_quantity = abs(current_quantity) - close_qty
+                            if self.remaining_quantity <= 0:
+                                self.remaining_quantity = 0
+                                self.partial_booked_75pct = True
+                                # All shares closed - exit monitoring loop
+                                trade['exit_price'] = price
+                                trade['pnl'] = realized_pnl
+                                self.trades.append(trade)
+                                
+                                if self.trade_db_id:
+                                    self.update_trade_in_db(
+                                        self.trade_db_id,
+                                        exit_price=price,
+                                        exit_time=get_ist_time(),
+                                        pnl=trade['pnl'],
+                                        status='CLOSED'
+                                    )
+                                logger.info(f"\n✓ POSITION COMPLETELY CLOSED | Final P&L: ₹{realized_pnl:.2f}")
+                                break
+                            else:
+                                # Some shares remaining (should not happen unless EOD earlier)
+                                if self.trade_db_id:
+                                    self.update_trade_in_db(
+                                        self.trade_db_id,
+                                        quantity=self.remaining_quantity,
+                                        exit_price=price,
+                                        exit_qty=close_qty,
+                                        stoploss_price=sl_price,
+                                        pnl=realized_pnl
+                                    )
+                
                 # Check for profit target (apply for remaining shares in partial booking mode too)
-                exit_qty = self.remaining_quantity if (self.remaining_quantity and self.remaining_quantity > 0) else quantity
+                exit_qty = abs(self.remaining_quantity) if (self.remaining_quantity and abs(self.remaining_quantity) > 0) else quantity
                 if target_price and exit_qty > 0 and entry_side == "BUY" and price >= target_price and not config.USE_PARTIAL_BOOKING:
                     logger.info(f"🎉 PROFIT TARGET HIT! Closing {selected_symbol} position @ ₹{price:.2f}")
                     exit_order = self.close_position(selected_symbol, exit_qty, price)
@@ -1490,7 +1859,7 @@ class KiteApp:
                         self.trade1_result = "WIN" if trade['pnl'] > 0 else "LOSS"
                     break
             
-            time.sleep(30)
+            time.sleep(5)  # Check every 5 seconds throughout the day to prevent missing targets
         
         # Generate report
         self.generate_final_report()
@@ -1704,6 +2073,290 @@ class KiteApp:
             logger.warning(f"Error reading ATR cache: {e}")
             return None
 
+    # ===== MULTI-STOCK CONFIDENCE SCORING & ALLOCATION =====
+    
+    def calculate_signal_confidence(self, symbol, data, candle, volume_ratio, breakout_strength):
+        """
+        Calculate confidence score for a signal (0.0 to 1.0)
+        Higher score = more capital allocation
+        
+        Factors:
+        1. Volume strength - how much above average
+        2. Breakout strength - how far past trigger
+        3. NIFTY alignment - how strongly aligned with index
+        4. Trend alignment - higher timeframe confirmation
+        5. Volatility favorability - ATR conditions
+        6. Gap alignment - pre-market gap direction vs signal
+        7. Open position bias - where open sits in day range
+        """
+        try:
+            score = 0.0
+            score_breakdown = {}
+            
+            # 1. VOLUME SCORE (0-1): Based on volume ratio
+            # Ratio of 1.5x = 0.5 score, 3x = 1.0 score
+            volume_score = min(1.0, (volume_ratio - 1.0) / 2.0) if volume_ratio > 1.0 else 0.0
+            score_breakdown['volume'] = volume_score
+            
+            # 2. BREAKOUT SCORE (0-1): Based on how far past trigger
+            # 0.5% past = 0.5 score, 1%+ past = 1.0 score
+            breakout_score = min(1.0, breakout_strength * 100)  # breakout_strength is in decimal
+            score_breakdown['breakout'] = breakout_score
+            
+            # 3. NIFTY ALIGNMENT SCORE (0-1): Based on strength of NIFTY bias
+            nifty_score = 0.5  # Neutral baseline
+            if self.nifty_bias == "NEUTRAL":
+                nifty_score = 0.5
+            else:
+                # Use nifty_strength_pct for scoring
+                nifty_score = min(1.0, 0.5 + self.nifty_strength_pct)
+            score_breakdown['nifty'] = nifty_score
+            
+            # 4. TREND ALIGNMENT SCORE (0-1): Higher timeframe confirmation
+            trend_score = 0.7  # Default if trend aligned
+            if config.USE_TREND_FILTER:
+                if self.is_trend_aligned(data["token"], candle[3], data.get("side", "BUY")):
+                    trend_score = 1.0
+                else:
+                    trend_score = 0.3
+            score_breakdown['trend'] = trend_score
+            
+            # 5. VOLATILITY SCORE (0-1): ATR-based favorability
+            atr_value = self.get_cached_atr(data["token"], 300)
+            volatility_score = 0.6  # Default
+            if atr_value and candle[3] > 0:
+                atr_pct = (atr_value / candle[3]) * 100
+                # Ideal ATR is 0.5-2% of price for scalping
+                if 0.5 <= atr_pct <= 2.0:
+                    volatility_score = 1.0
+                elif 0.3 <= atr_pct <= 3.0:
+                    volatility_score = 0.7
+                else:
+                    volatility_score = 0.4
+            score_breakdown['volatility'] = volatility_score
+            
+            # 6. GAP ALIGNMENT SCORE (0-1): Pre-market gap direction vs signal
+            gap_score = 0.5  # Neutral baseline
+            if getattr(config, 'USE_GAP_FILTER', False):
+                gap_pct = data.get('gap_pct', 0)
+                side = data.get('side', 'BUY')
+                if side == 'BUY':
+                    if gap_pct >= config.GAP_STRONG_PCT:
+                        gap_score = 1.0
+                    elif gap_pct >= config.GAP_ALIGNMENT_MIN_PCT:
+                        gap_score = 0.8
+                    elif gap_pct >= 0:
+                        gap_score = 0.5
+                    else:
+                        gap_score = 0.2  # Gap contradicts LONG
+                else:  # SELL
+                    if gap_pct <= -config.GAP_STRONG_PCT:
+                        gap_score = 1.0
+                    elif gap_pct <= -config.GAP_ALIGNMENT_MIN_PCT:
+                        gap_score = 0.8
+                    elif gap_pct <= 0:
+                        gap_score = 0.5
+                    else:
+                        gap_score = 0.2  # Gap contradicts SHORT
+            score_breakdown['gap'] = gap_score
+            
+            # 7. OPEN POSITION BIAS SCORE (0-1): Where open sits in day range
+            open_bias_score = 0.5  # Neutral baseline
+            if getattr(config, 'USE_OPEN_POSITION_FILTER', False):
+                open_bias = data.get('open_bias', 'NEUTRAL')
+                side = data.get('side', 'BUY')
+                if side == 'BUY':
+                    if open_bias == 'LONG':
+                        open_bias_score = 1.0
+                    elif open_bias == 'NEUTRAL':
+                        open_bias_score = 0.5
+                    else:
+                        open_bias_score = 0.2
+                else:  # SELL
+                    if open_bias == 'SHORT':
+                        open_bias_score = 1.0
+                    elif open_bias == 'NEUTRAL':
+                        open_bias_score = 0.5
+                    else:
+                        open_bias_score = 0.2
+            score_breakdown['open_bias'] = open_bias_score
+            
+            # Calculate weighted total
+            score = (
+                score_breakdown['volume'] * config.CONFIDENCE_WEIGHT_VOLUME +
+                score_breakdown['breakout'] * config.CONFIDENCE_WEIGHT_BREAKOUT +
+                score_breakdown['nifty'] * config.CONFIDENCE_WEIGHT_NIFTY +
+                score_breakdown['trend'] * config.CONFIDENCE_WEIGHT_TREND +
+                score_breakdown['volatility'] * config.CONFIDENCE_WEIGHT_VOLATILITY +
+                score_breakdown['gap'] * getattr(config, 'CONFIDENCE_WEIGHT_GAP', 0.0) +
+                score_breakdown['open_bias'] * getattr(config, 'CONFIDENCE_WEIGHT_OPEN_BIAS', 0.0)
+            )
+            
+            logger.info(f"   📊 {symbol} Confidence: {score:.2f} | Vol:{volume_score:.2f} Brk:{breakout_score:.2f} Nifty:{nifty_score:.2f} Trend:{trend_score:.2f} ATR:{volatility_score:.2f} Gap:{gap_score:.2f} Bias:{open_bias_score:.2f}")
+            
+            return score, score_breakdown
+            
+        except Exception as e:
+            logger.warning(f"Error calculating confidence for {symbol}: {e}")
+            return 0.5, {}  # Return neutral score on error
+    
+    def allocate_capital_to_signals(self, valid_signals):
+        """
+        Allocate capital across multiple signals based on confidence scores
+        
+        Args:
+            valid_signals: List of dicts with signal data and confidence scores
+            
+        Returns:
+            List of allocations: [{symbol, data, allocation_pct, quantity, confidence}, ...]
+        """
+        if not valid_signals:
+            return []
+        
+        # Get available capital (respecting hardstop)
+        hardstop_max = getattr(config, "HARDSTOP_EFFECTIVE_MAX", 80000)
+        available_capital = min(
+            self.account_balance * self.leverage * config.MARGIN_UTILIZATION,
+            hardstop_max
+        )
+        
+        # Subtract already allocated capital
+        available_capital -= self.allocated_capital
+        
+        if available_capital <= 0:
+            logger.warning("⚠️  No capital available for new positions")
+            return []
+        
+        # Sort signals by confidence (highest first)
+        sorted_signals = sorted(valid_signals, key=lambda x: x['confidence'], reverse=True)
+        
+        # Limit to MAX_POSITIONS
+        max_new_positions = config.MAX_POSITIONS - len(self.active_positions)
+        sorted_signals = sorted_signals[:max_new_positions]
+        
+        if not sorted_signals:
+            return []
+        
+        # Calculate total confidence for weighting
+        total_confidence = sum(s['confidence'] for s in sorted_signals)
+        
+        allocations = []
+        remaining_capital = available_capital
+        
+        for signal in sorted_signals:
+            # Calculate proportional allocation based on confidence
+            if total_confidence > 0:
+                raw_allocation_pct = signal['confidence'] / total_confidence
+            else:
+                raw_allocation_pct = 1.0 / len(sorted_signals)
+            
+            # Apply min/max constraints
+            allocation_pct = max(config.MIN_ALLOCATION_PCT, min(config.MAX_ALLOCATION_PCT, raw_allocation_pct))
+            
+            # Calculate capital for this position
+            position_capital = available_capital * allocation_pct
+            position_capital = min(position_capital, remaining_capital)
+            
+            if position_capital <= 0:
+                continue
+            
+            # Calculate quantity
+            entry_price = signal['entry_price']
+            quantity = int(position_capital / entry_price)
+            
+            if quantity < 1:
+                logger.warning(f"   {signal['symbol']}: Allocation too small for 1 share")
+                continue
+            
+            actual_allocation = quantity * entry_price
+            remaining_capital -= actual_allocation
+            
+            allocations.append({
+                'symbol': signal['symbol'],
+                'data': signal['data'],
+                'entry_price': entry_price,
+                'entry_side': signal['entry_side'],
+                'sl_price': signal['sl_price'],
+                'confidence': signal['confidence'],
+                'allocation_pct': allocation_pct,
+                'quantity': quantity,
+                'capital_allocated': actual_allocation
+            })
+            
+            logger.info(f"   💰 {signal['symbol']}: {allocation_pct*100:.1f}% = ₹{actual_allocation:,.0f} ({quantity} shares)")
+        
+        return allocations
+    
+    def execute_multi_stock_entries(self, allocations):
+        """
+        Execute entry orders for all allocated positions
+        
+        Args:
+            allocations: List from allocate_capital_to_signals()
+            
+        Returns:
+            Number of successful entries
+        """
+        successful_entries = 0
+        
+        for alloc in allocations:
+            symbol = alloc['symbol']
+            
+            # Skip if already have position in this symbol
+            if symbol in self.active_positions:
+                logger.warning(f"   ⚠️  {symbol}: Already have active position - skipping")
+                continue
+            
+            logger.info(f"\n💼 ENTERING POSITION: {symbol}")
+            logger.info(f"   Confidence: {alloc['confidence']:.2f}")
+            logger.info(f"   Side: {alloc['entry_side']}")
+            logger.info(f"   Quantity: {alloc['quantity']}")
+            logger.info(f"   Entry Price: ₹{alloc['entry_price']:.2f}")
+            logger.info(f"   Stop Loss: ₹{alloc['sl_price']:.2f}")
+            
+            # Place order
+            if config.USE_LIMIT_ORDERS:
+                limit_price = alloc['entry_price'] + (0.20 if alloc['entry_side'] == "BUY" else -0.20)
+            else:
+                limit_price = alloc['entry_price']
+            
+            try:
+                if alloc['entry_side'] == "BUY":
+                    order = self.place_buy_order(symbol, alloc['quantity'], limit_price, alloc['sl_price'])
+                else:
+                    order = self.place_sell_order(symbol, alloc['quantity'], limit_price, alloc['sl_price'])
+                
+                if order:
+                    # Track position
+                    self.active_positions[symbol] = {
+                        'entry_price': limit_price,
+                        'quantity': alloc['quantity'],
+                        'remaining_quantity': alloc['quantity'],
+                        'side': alloc['entry_side'],
+                        'sl_price': alloc['sl_price'],
+                        'confidence': alloc['confidence'],
+                        'capital_allocated': alloc['capital_allocated'],
+                        'entry_time': get_ist_time(),
+                        'token': alloc['data']['token'],
+                        'vwap': alloc['data']['vwap'],
+                        'exchange': alloc['data'].get('exchange', 'NSE'),
+                        'partial_booked_1': False,
+                        'partial_booked_2': False,
+                        'sl_at_breakeven': False,
+                        'realized_pnl': 0.0  # Track P&L from partial exits
+                    }
+                    self.allocated_capital += alloc['capital_allocated']
+                    successful_entries += 1
+                    self.num_trades_today += 1
+                    logger.info(f"   ✅ Entry successful for {symbol}")
+                else:
+                    logger.error(f"   ❌ Entry failed for {symbol}")
+                    
+            except Exception as e:
+                logger.error(f"   ❌ Error entering {symbol}: {e}")
+        
+        return successful_entries
+
     def get_trend_vwap(self, instrument_token):
         """Get cached higher timeframe VWAP for trend alignment"""
         try:
@@ -1823,36 +2476,58 @@ class KiteApp:
         Only take SHORT signals if NIFTY < NIFTY_VWAP
         """
         try:
-            # Get NIFTY current quote
-            nifty_quote = self.kite.get_quote("NSE", "NIFTY 50")
+            # Get NIFTY current quote - use NSE index symbol
+            # Try multiple possible formats for NIFTY index
+            nifty_quote = None
+            nifty_symbols = ["NIFTY 50", "NIFTY", "NIFTY50"]
+            
+            for nifty_sym in nifty_symbols:
+                try:
+                    nifty_quote = self.kite.get_quote("NSE", nifty_sym)
+                    if nifty_quote and nifty_quote.get('last_price', 0) > 0:
+                        break
+                except:
+                    continue
+            
+            if not nifty_quote:
+                logger.warning("Could not fetch NIFTY quote with any symbol format, skipping filter")
+                return "NEUTRAL"
+            
             nifty_price = nifty_quote.get('last_price', 0)
             
             if nifty_price <= 0:
                 logger.warning("Could not fetch NIFTY price, skipping filter")
                 return "NEUTRAL"
             
-            # Get NIFTY 15-min opening candle for VWAP
-            now = get_ist_time()
-            candle_start = now.replace(hour=9, minute=15, second=0, microsecond=0)
-            candle_end = now.replace(hour=9, minute=30, second=0, microsecond=0)
+            # Use opening price from quote as VWAP approximation (more reliable than historical API for index)
+            nifty_vwap = nifty_quote.get('ohlc', {}).get('open', nifty_price)
             
-            try:
-                # Try to get NIFTY instrument token or use direct API
-                nifty_candles = self.kite.get_historical_data(
-                    "NIFTY",  # May need proper token
-                    candle_start,
-                    candle_end,
-                    interval="15minute"
-                )
+            # If open price not available, try to get from historical data
+            if not nifty_vwap or nifty_vwap <= 0:
+                now = get_ist_time()
+                candle_start = now.replace(hour=9, minute=15, second=0, microsecond=0)
+                candle_end = now.replace(hour=9, minute=30, second=0, microsecond=0)
                 
-                if nifty_candles and len(nifty_candles) > 0:
-                    candle = nifty_candles[0]
-                    nifty_vwap = self.kite.calculate_vwap([candle])
-                else:
-                    # Fallback: use opening price as approximation
-                    nifty_vwap = nifty_quote.get('ohlc', {}).get('open', nifty_price)
-            except:
-                nifty_vwap = nifty_quote.get('ohlc', {}).get('open', nifty_price)
+                try:
+                    # Get NIFTY instrument token for historical data
+                    nifty_token = self.kite.find_instrument_token("NSE", "NIFTY 50")
+                    if nifty_token:
+                        nifty_candles = self.kite.get_historical_data(
+                            nifty_token,
+                            candle_start,
+                            candle_end,
+                            interval="15minute"
+                        )
+                        
+                        if nifty_candles and len(nifty_candles) > 0:
+                            candle = nifty_candles[0]
+                            nifty_vwap = self.kite.calculate_vwap([candle])
+                except Exception as hist_err:
+                    logger.debug(f"Could not fetch NIFTY historical: {hist_err}")
+                    nifty_vwap = nifty_price  # Fallback to current price
+            
+            if not nifty_vwap or nifty_vwap <= 0:
+                nifty_vwap = nifty_price  # Final fallback
             
             # Determine bias strength
             self.nifty_strength_pct = abs(nifty_price - nifty_vwap) / nifty_vwap * 100 if nifty_vwap else 0
@@ -1886,6 +2561,485 @@ class KiteApp:
             self.nifty_bias = "NEUTRAL"
             return "NEUTRAL"
     
+    def run_multi_stock_trading(self, symbols_data):
+        """
+        MULTI-STOCK MODE: Scan all symbols, collect signals, score by confidence,
+        allocate capital proportionally, and execute multiple positions.
+        """
+        logger.info("\n" + "=" * 60)
+        logger.info("🚀 MULTI-STOCK PORTFOLIO MODE ACTIVATED")
+        logger.info(f"   Max Positions: {config.MAX_POSITIONS}")
+        logger.info(f"   Min Allocation: {config.MIN_ALLOCATION_PCT*100:.0f}%")
+        logger.info(f"   Max Allocation: {config.MAX_ALLOCATION_PCT*100:.0f}%")
+        logger.info(f"   Min Confidence: {config.MIN_CONFIDENCE_SCORE*100:.0f}%")
+        logger.info("=" * 60 + "\n")
+        self.log_to_db("🚀 MULTI-STOCK PORTFOLIO MODE - Scanning all symbols...")
+        
+        pending_retests = {}
+        last_scan_time = get_ist_time()
+        scan_interval = 60  # Scan every 60 seconds (was 30) to avoid API rate limits
+        
+        while not self.should_stop:
+            now = get_ist_time()
+            current_time_int = now.hour * 100 + now.minute
+            
+            # Check if entry window is still open
+            if current_time_int >= 1045:
+                logger.info("⏰ Entry window CLOSED (after 10:45 AM)")
+                break
+            
+            # Determine window state
+            if current_time_int < 1015:
+                self.entry_window_state = "PRIMARY"
+            elif current_time_int < 1045:
+                self.entry_window_state = "SOFT"
+            else:
+                self.entry_window_state = "CLOSED"
+                break
+            
+            # Check if we've reached max positions
+            if len(self.active_positions) >= config.MAX_POSITIONS:
+                logger.info(f"✅ Maximum positions ({config.MAX_POSITIONS}) reached - monitoring existing...")
+                break
+            
+            # Check stop flag
+            if self.should_stop:
+                logger.info("🛑 Stop requested")
+                return False
+            
+            # Scan interval check
+            if (now - last_scan_time).seconds < scan_interval:
+                time.sleep(5)
+                continue
+            
+            last_scan_time = now
+            
+            # ===== PHASE 1: COLLECT ALL VALID SIGNALS =====
+            valid_signals = []
+            
+            logger.info(f"\n🔍 SCANNING {len(symbols_data)} symbols... ({now.strftime('%H:%M:%S')})")
+            
+            for symbol, data in symbols_data.items():
+                # Skip if already have position
+                if symbol in self.active_positions:
+                    continue
+                
+                # Skip if max trades for this symbol
+                if self.trades_by_symbol.get(symbol, 0) >= config.MAX_TRADES_PER_SYMBOL:
+                    continue
+                
+                token = data["token"]
+                vwap = data["vwap"]
+                long_trigger = data["long_trigger"]
+                short_trigger = data["short_trigger"]
+                
+                # Get latest 5-min candle
+                candle = self.get_latest_5min_candle(token)
+                if not candle:
+                    continue
+                
+                o, h_5, l_5, c_5, v, candle_time = candle
+                
+                # Check volume confirmation
+                volume_confirmed = self.check_volume_confirmation(token, candle)
+                
+                # Calculate volume ratio for scoring
+                volume_ratio = 1.0
+                try:
+                    lookback = config.VOLUME_LOOKBACK_CANDLES
+                    start_time = now - datetime.timedelta(minutes=lookback * 5)
+                    candles = self.kite.get_historical_data(token, start_time, now, interval="5minute")
+                    if candles and len(candles) >= 5:
+                        volumes = [c['volume'] for c in candles[-lookback:]]
+                        avg_volume = sum(volumes) / len(volumes) if volumes else 1
+                        volume_ratio = v / avg_volume if avg_volume > 0 else 1.0
+                except:
+                    volume_ratio = 1.0
+                
+                entry_side = None
+                entry_price = None
+                breakout_strength = 0
+                
+                # Check for LONG signal
+                if c_5 > long_trigger and c_5 > vwap:
+                    # Apply soft cutoff restrictions
+                    if self.entry_window_state == "SOFT" and not volume_confirmed:
+                        continue
+                    
+                    # NIFTY filter
+                    if self.is_nifty_bias_blocking("BUY"):
+                        continue
+                    
+                    # ENHANCEMENT 2: Gap alignment filter
+                    if getattr(config, 'USE_GAP_FILTER', False) and getattr(config, 'GAP_CONTRADICTION_SKIP', False):
+                        gap_pct = data.get('gap_pct', 0)
+                        if gap_pct < -config.GAP_ALIGNMENT_MIN_PCT:
+                            continue
+                    
+                    # ENHANCEMENT 3: Open position bias filter
+                    if getattr(config, 'USE_OPEN_POSITION_FILTER', False) and getattr(config, 'OPEN_POSITION_SKIP_CONTRADICTION', False):
+                        if data.get('open_bias') == "SHORT":
+                            continue
+                    
+                    # Trend filter
+                    if config.USE_TREND_FILTER and not self.is_trend_aligned(token, c_5, "BUY"):
+                        continue
+                    
+                    # Liquidity filter
+                    if config.USE_LIQUIDITY_FILTER and not self.check_liquidity_and_spread(data["exchange"], symbol):
+                        continue
+                    
+                    entry_side = "BUY"
+                    entry_price = c_5
+                    breakout_strength = (c_5 - long_trigger) / long_trigger
+                
+                # Check for SHORT signal
+                elif c_5 < short_trigger and c_5 < vwap:
+                    if self.entry_window_state == "SOFT" and not volume_confirmed:
+                        continue
+                    
+                    if self.is_nifty_bias_blocking("SELL"):
+                        continue
+                    
+                    # ENHANCEMENT 2: Gap alignment filter
+                    if getattr(config, 'USE_GAP_FILTER', False) and getattr(config, 'GAP_CONTRADICTION_SKIP', False):
+                        gap_pct = data.get('gap_pct', 0)
+                        if gap_pct > config.GAP_ALIGNMENT_MIN_PCT:
+                            continue
+                    
+                    # ENHANCEMENT 3: Open position bias filter
+                    if getattr(config, 'USE_OPEN_POSITION_FILTER', False) and getattr(config, 'OPEN_POSITION_SKIP_CONTRADICTION', False):
+                        if data.get('open_bias') == "LONG":
+                            continue
+                    
+                    if config.USE_TREND_FILTER and not self.is_trend_aligned(token, c_5, "SELL"):
+                        continue
+                    
+                    if config.USE_LIQUIDITY_FILTER and not self.check_liquidity_and_spread(data["exchange"], symbol):
+                        continue
+                    
+                    entry_side = "SELL"
+                    entry_price = c_5
+                    breakout_strength = (short_trigger - c_5) / short_trigger
+                
+                # If valid signal found, score it
+                if entry_side:
+                    # Store side in data for scoring
+                    data["side"] = entry_side
+                    
+                    confidence, breakdown = self.calculate_signal_confidence(
+                        symbol, data, candle, volume_ratio, breakout_strength
+                    )
+                    
+                    # Only consider signals above minimum confidence
+                    if confidence >= config.MIN_CONFIDENCE_SCORE:
+                        # Calculate stop loss
+                        sl_price = self.calculate_dynamic_sl(entry_side, vwap, h_5, l_5)
+                        sl_price = self.apply_stoploss_distance_factor(entry_price, sl_price, entry_side)
+                        
+                        valid_signals.append({
+                            'symbol': symbol,
+                            'data': data,
+                            'entry_side': entry_side,
+                            'entry_price': entry_price,
+                            'sl_price': sl_price,
+                            'confidence': confidence,
+                            'breakdown': breakdown,
+                            'volume_ratio': volume_ratio,
+                            'breakout_strength': breakout_strength
+                        })
+                        
+                        logger.info(f"   ✅ {symbol}: {entry_side} signal | Confidence: {confidence:.2f}")
+            
+            # ===== PHASE 2: ALLOCATE CAPITAL & EXECUTE =====
+            if valid_signals:
+                logger.info(f"\n📊 FOUND {len(valid_signals)} VALID SIGNALS - Allocating capital...")
+                
+                # Allocate capital based on confidence
+                allocations = self.allocate_capital_to_signals(valid_signals)
+                
+                if allocations:
+                    logger.info(f"\n💼 EXECUTING {len(allocations)} POSITIONS...")
+                    successful = self.execute_multi_stock_entries(allocations)
+                    logger.info(f"   ✅ Successfully entered {successful}/{len(allocations)} positions")
+                    
+                    if successful > 0:
+                        self.log_to_db(f"✅ Entered {successful} positions in multi-stock mode")
+                else:
+                    logger.info("   ⚠️  No allocations made (capital constraints)")
+            else:
+                logger.info("   📭 No valid signals this scan")
+            
+            # Small delay before next scan
+            time.sleep(5)
+        
+        # ===== PHASE 3: MONITOR ALL POSITIONS =====
+        if self.active_positions:
+            logger.info(f"\n📈 MONITORING {len(self.active_positions)} ACTIVE POSITIONS...")
+            self.log_to_db(f"📈 Monitoring {len(self.active_positions)} positions")
+            return self.monitor_multi_stock_positions(symbols_data)
+        else:
+            logger.info("\n📊 No positions entered today.")
+            self.generate_final_report()
+            return True
+    
+    def monitor_multi_stock_positions(self, symbols_data):
+        """
+        Monitor all active positions for exit conditions (SL, target, partial booking, EOD)
+        """
+        logger.info("\n" + "=" * 60)
+        logger.info("📊 MULTI-POSITION MONITORING STARTED")
+        logger.info(f"   Active Positions: {list(self.active_positions.keys())}")
+        logger.info("=" * 60 + "\n")
+        
+        last_status_time = get_ist_time()
+        status_interval = 60  # Print status every 60 seconds
+        
+        while self.active_positions and not self.should_stop:
+            now = get_ist_time()
+            current_time_int = now.hour * 100 + now.minute
+            
+            # End of day exit check
+            eod_time = getattr(config, 'PARTIAL_BOOKING_EOD_TIME', '15:25')
+            eod_hour, eod_min = map(int, eod_time.split(':'))
+            eod_time_int = eod_hour * 100 + eod_min
+            
+            if current_time_int >= eod_time_int:
+                logger.info(f"⏰ EOD TIME ({eod_time}) - Exiting all positions...")
+                self.exit_all_positions("EOD")
+                break
+            
+            # Periodic status update
+            should_print_status = (now - last_status_time).seconds >= status_interval
+            if should_print_status:
+                logger.info(f"\n📊 POSITION STATUS [{now.strftime('%H:%M:%S')}]")
+                last_status_time = now
+            
+            # ===== BATCH FETCH ALL QUOTES IN ONE API CALL =====
+            instrument_keys = [f"{pos.get('exchange', 'NSE')}:{symbol}" for symbol, pos in self.active_positions.items()]
+            batch_quotes = self.kite.get_quotes_batch(instrument_keys) if instrument_keys else {}
+            
+            # Check each position
+            positions_to_remove = []
+            
+            for symbol, pos in self.active_positions.items():
+                try:
+                    # Get current price from batch quotes
+                    instrument_key = f"{pos.get('exchange', 'NSE')}:{symbol}"
+                    quote = batch_quotes.get(instrument_key)
+                    if not quote:
+                        continue
+                    
+                    current_price = quote.get('last_price', 0)
+                    if current_price <= 0:
+                        continue
+                    
+                    entry_price = pos['entry_price']
+                    sl_price = pos['sl_price']
+                    side = pos['side']
+                    quantity = pos['remaining_quantity']
+                    
+                    # Calculate P&L
+                    if side == "BUY":
+                        pnl_per_share = current_price - entry_price
+                        r_multiple = pnl_per_share / abs(entry_price - sl_price) if abs(entry_price - sl_price) > 0 else 0
+                        hit_sl = current_price <= sl_price
+                    else:
+                        pnl_per_share = entry_price - current_price
+                        r_multiple = pnl_per_share / abs(entry_price - sl_price) if abs(entry_price - sl_price) > 0 else 0
+                        hit_sl = current_price >= sl_price
+                    
+                    # Include realized P&L from partial exits
+                    realized_pnl = pos.get('realized_pnl', 0)
+                    unrealized_pnl = pnl_per_share * quantity
+                    total_pnl = realized_pnl + unrealized_pnl
+                    self.position_pnls[symbol] = total_pnl
+                    
+                    # Periodic status for this position
+                    if should_print_status:
+                        status_icon = "🟢" if total_pnl >= 0 else "🔴"
+                        logger.info(f"   {status_icon} {symbol} ({side}): ₹{current_price:.2f} | R:{r_multiple:.2f} | P&L:₹{total_pnl:,.0f} | SL:₹{sl_price:.2f} | Qty:{quantity}")
+                    
+                    # Check stop loss
+                    if hit_sl:
+                        logger.info(f"🛑 {symbol}: STOP LOSS HIT at ₹{current_price:.2f}")
+                        self.exit_position(symbol, current_price, "STOPLOSS")
+                        positions_to_remove.append(symbol)
+                        continue
+                    
+                    # Calculate partial exit quantities with rounding fix (BUG 7 fix)
+                    original_qty = pos['quantity']
+                    first_close_qty = int(original_qty * config.PARTIAL_BOOKING_FIRST_CLOSE_PCT)
+                    second_close_qty = int(original_qty * config.PARTIAL_BOOKING_SECOND_CLOSE_PCT)
+                    eod_close_qty = int(original_qty * getattr(config, 'PARTIAL_BOOKING_EOD_CLOSE_PCT', 0.55))
+                    # Distribute rounding remainder to Stage 3 runner (EOD leg)
+                    remainder = original_qty - (first_close_qty + second_close_qty + eod_close_qty)
+                    if remainder > 0:
+                        eod_close_qty += remainder
+                    # Ensure at least 1 share per stage for small quantities
+                    if original_qty >= 1 and first_close_qty == 0:
+                        first_close_qty = 1
+                    if original_qty >= 2 and second_close_qty == 0:
+                        second_close_qty = 1
+                    
+                    # Partial booking at 0.5R (first target)
+                    if r_multiple >= config.PARTIAL_BOOKING_FIRST_TARGET_R and not pos['partial_booked_1']:
+                        close_qty = min(first_close_qty, pos['remaining_quantity'] - 1) if pos['remaining_quantity'] > 1 else 1
+                        if close_qty > 0:
+                            logger.info(f"💰 {symbol}: 0.5R reached - Booking {close_qty} shares")
+                            self.partial_exit_position(symbol, current_price, close_qty, "0.5R TARGET")
+                            pos['partial_booked_1'] = True
+                            # Track realized P&L from this partial exit
+                            partial_pnl = pnl_per_share * close_qty
+                            pos['realized_pnl'] = pos.get('realized_pnl', 0) + partial_pnl
+                            pos['remaining_quantity'] -= close_qty
+                            logger.info(f"   💵 Realized P&L from 0.5R exit: ₹{partial_pnl:,.2f}")
+                    
+                    # Partial booking at 1R (second target) + move SL to breakeven
+                    if r_multiple >= config.PARTIAL_BOOKING_SECOND_TARGET_R and not pos['partial_booked_2']:
+                        close_qty = min(second_close_qty, pos['remaining_quantity'] - 1) if pos['remaining_quantity'] > 1 else pos['remaining_quantity']
+                        if close_qty > 0:
+                            logger.info(f"💰 {symbol}: 1R reached - Booking {close_qty} shares")
+                            self.partial_exit_position(symbol, current_price, close_qty, "1R TARGET")
+                            pos['partial_booked_2'] = True
+                            # Track realized P&L from this partial exit
+                            partial_pnl = pnl_per_share * close_qty
+                            pos['realized_pnl'] = pos.get('realized_pnl', 0) + partial_pnl
+                            pos['remaining_quantity'] -= close_qty
+                            logger.info(f"   💵 Realized P&L from 1R exit: ₹{partial_pnl:,.2f}")
+                            
+                            # Move SL to breakeven
+                            if not pos['sl_at_breakeven']:
+                                pos['sl_price'] = entry_price
+                                pos['sl_at_breakeven'] = True
+                                logger.info(f"   📍 {symbol}: SL moved to breakeven (₹{entry_price:.2f})")
+                    
+                    # Stage 3: Exit remaining at 2R target (BUG 6 fix - was missing)
+                    if pos['partial_booked_2'] and r_multiple >= config.PROFIT_TARGET_RATIO and pos['remaining_quantity'] > 0:
+                        close_qty = pos['remaining_quantity']
+                        logger.info(f"🎯 {symbol}: 2R TARGET HIT! Closing remaining {close_qty} shares at ₹{current_price:.2f}")
+                        self.exit_position(symbol, current_price, "2R TARGET")
+                        positions_to_remove.append(symbol)
+                        continue
+                    
+                    # Check if position fully closed
+                    if pos['remaining_quantity'] <= 0:
+                        positions_to_remove.append(symbol)
+                    
+                except Exception as e:
+                    logger.warning(f"Error monitoring {symbol}: {e}")
+            
+            # Remove closed positions
+            for symbol in positions_to_remove:
+                if symbol in self.active_positions:
+                    del self.active_positions[symbol]
+            
+            time.sleep(15)  # Check every 15 seconds
+        
+        logger.info("\n" + "=" * 60)
+        logger.info("📊 ALL POSITIONS CLOSED - SESSION COMPLETE")
+        logger.info("=" * 60)
+        
+        self.generate_multi_stock_report()
+        return True
+    
+    def exit_position(self, symbol, exit_price, reason):
+        """Exit a single position completely"""
+        if symbol not in self.active_positions:
+            return
+        
+        pos = self.active_positions[symbol]
+        quantity = pos['remaining_quantity']
+        side = pos['side']
+        
+        try:
+            # Place exit order (opposite side)
+            if side == "BUY":
+                order = self.place_sell_order(symbol, quantity, exit_price, 0)
+            else:
+                order = self.place_buy_order(symbol, quantity, exit_price, 0)
+            
+            # Calculate final P&L (remaining position + already realized from partials)
+            if side == "BUY":
+                final_exit_pnl = (exit_price - pos['entry_price']) * quantity
+            else:
+                final_exit_pnl = (pos['entry_price'] - exit_price) * quantity
+            
+            # Total P&L = realized from partial exits + this final exit
+            realized_pnl = pos.get('realized_pnl', 0)
+            total_pnl = realized_pnl + final_exit_pnl
+            
+            self.position_pnls[symbol] = total_pnl
+            self.allocated_capital -= pos['capital_allocated']
+            
+            logger.info(f"   ✅ {symbol} EXITED | Reason: {reason}")
+            logger.info(f"      Final exit P&L: ₹{final_exit_pnl:,.2f}")
+            logger.info(f"      Previously realized: ₹{realized_pnl:,.2f}")
+            logger.info(f"      TOTAL P&L: ₹{total_pnl:,.2f}")
+            self.log_to_db(f"✅ {symbol} exited ({reason}) Total P&L: ₹{total_pnl:,.2f}")
+            
+        except Exception as e:
+            logger.error(f"Error exiting {symbol}: {e}")
+    
+    def partial_exit_position(self, symbol, exit_price, quantity, reason):
+        """Partially exit a position"""
+        if symbol not in self.active_positions:
+            return
+        
+        pos = self.active_positions[symbol]
+        side = pos['side']
+        
+        try:
+            # Place partial exit order
+            if side == "BUY":
+                order = self.place_sell_order(symbol, quantity, exit_price, 0)
+            else:
+                order = self.place_buy_order(symbol, quantity, exit_price, 0)
+            
+            logger.info(f"   ✅ {symbol}: Partial exit {quantity} shares at ₹{exit_price:.2f} ({reason})")
+            
+        except Exception as e:
+            logger.error(f"Error partial exit {symbol}: {e}")
+    
+    def exit_all_positions(self, reason):
+        """Exit all active positions"""
+        for symbol in list(self.active_positions.keys()):
+            pos = self.active_positions[symbol]
+            try:
+                quote = self.kite.get_quote(pos.get('exchange', 'NSE'), symbol)
+                if quote:
+                    current_price = quote.get('last_price', pos['entry_price'])
+                    self.exit_position(symbol, current_price, reason)
+            except Exception as e:
+                logger.error(f"Error exiting {symbol}: {e}")
+        
+        self.active_positions.clear()
+    
+    def generate_multi_stock_report(self):
+        """Generate end-of-day report for multi-stock trading"""
+        logger.info("\n" + "=" * 60)
+        logger.info("📊 MULTI-STOCK TRADING SESSION REPORT")
+        logger.info("=" * 60)
+        
+        total_pnl = sum(self.position_pnls.values())
+        
+        logger.info(f"\n💰 POSITION P&L BREAKDOWN:")
+        for symbol, pnl in self.position_pnls.items():
+            status = "✅ PROFIT" if pnl > 0 else "❌ LOSS" if pnl < 0 else "➖ BREAKEVEN"
+            logger.info(f"   {symbol}: ₹{pnl:,.2f} {status}")
+        
+        logger.info(f"\n📈 TOTAL SESSION P&L: ₹{total_pnl:,.2f}")
+        logger.info(f"   Positions Traded: {len(self.position_pnls)}")
+        
+        winning = sum(1 for pnl in self.position_pnls.values() if pnl > 0)
+        losing = sum(1 for pnl in self.position_pnls.values() if pnl < 0)
+        win_rate = (winning / len(self.position_pnls) * 100) if self.position_pnls else 0
+        
+        logger.info(f"   Win Rate: {win_rate:.1f}% ({winning}W / {losing}L)")
+        logger.info("=" * 60 + "\n")
+        
+        self.log_to_db(f"📊 Session complete: {len(self.position_pnls)} positions, P&L: ₹{total_pnl:,.2f}, Win Rate: {win_rate:.1f}%")
+
     def check_entry_window_and_rules(self):
         """
         CHANGE 4: Extended & Adaptive Window
@@ -2056,7 +3210,7 @@ class KiteApp:
             return True
         
         # Calculate daily P&L
-        self.daily_pnl = sum([t.get('pnl', 0) for t in self.trades_today])
+        self.daily_pnl = sum([t.get('pnl', 0) for t in self.trades if t.get('pnl') is not None])
         actual_balance = self.starting_balance or self.account_balance or 1  # Avoid division by zero
         self.daily_loss_pct = self.daily_pnl / actual_balance if actual_balance > 0 else 0
         
@@ -2088,16 +3242,27 @@ class KiteApp:
                 logger.info("No open positions to close")
                 return True
             
-            for position in positions:
+            # Iterate over 'day' positions (get_positions returns {"net": [...], "day": [...]})
+            day_positions = positions.get('day', []) if isinstance(positions, dict) else positions
+            
+            for position in day_positions:
                 symbol = position.get('tradingsymbol')
-                quantity = position.get('quantity')
-                if quantity and quantity > 0:
-                    logger.info(f"   Closing {quantity} shares of {symbol}")
+                quantity = position.get('quantity', 0)
+                if quantity and quantity != 0:
+                    # Determine side: positive qty = LONG (close with SELL), negative qty = SHORT (close with BUY)
+                    if quantity > 0:
+                        close_side = "SELL"
+                        close_qty = int(quantity)
+                    else:
+                        close_side = "BUY"
+                        close_qty = int(abs(quantity))
+                    
+                    logger.info(f"   Closing {close_qty} shares of {symbol} ({close_side})")
                     try:
                         self.kite.place_order(
                             symbol=symbol,
-                            transaction_type="SELL",
-                            quantity=int(quantity),
+                            transaction_type=close_side,
+                            quantity=close_qty,
                             order_type="MARKET",
                             product=config.TRADE_TYPE
                         )
@@ -2191,6 +3356,25 @@ class KiteApp:
                 # Extended entry window: PRIMARY (9:30-10:15 AM) + SOFT (10:15-10:45 AM)
                 if now.hour > 10 or (now.hour == 10 and now.minute >= 45):
                     self.log_to_db(f"Entry window CLOSED check: hour={now.hour}, minute={now.minute}")
+                    
+                    # CHECK FOR RESTORED POSITIONS - monitor them even if entry window is closed!
+                    if self.active_positions:
+                        logger.info("⚠️  Entry window closed BUT have active positions!")
+                        logger.info(f"📈 MONITORING {len(self.active_positions)} RESTORED POSITIONS...")
+                        self.log_to_db(f"Monitoring {len(self.active_positions)} restored positions")
+                        
+                        # Get symbols data for monitoring
+                        symbols_data = {}
+                        for symbol_cfg in config.SYMBOLS_TO_MONITOR:
+                            sym = symbol_cfg["symbol"]
+                            if sym in self.active_positions:
+                                symbols_data[sym] = {
+                                    'exchange': symbol_cfg["exchange"],
+                                    'token': self.active_positions[sym].get('token'),
+                                }
+                        
+                        self.monitor_multi_stock_positions(symbols_data)
+                    
                     if now.hour < 15 or (now.hour == 15 and now.minute < 30):
                         logger.warning("⚠️  Entry window already closed for today (9:30-10:45 AM)")
                         logger.info("📅 Bot will wait until next trading day (9:15 AM)")
@@ -2240,6 +3424,30 @@ class KiteApp:
                 
                 # Reset daily stats for new day
                 self.trades = []
+                self.trades_today = []
+                self.num_trades_today = 0
+                self.trades_by_symbol = {}
+                self.trade1_result = None
+                self.active_positions = {}
+                self.position_pnls = {}
+                self.allocated_capital = 0
+                self.daily_pnl = 0.0
+                self.daily_loss_pct = 0.0
+                self.partial_booked_75pct = False
+                self.sl_moved_to_breakeven = False
+                self.sl_moved_to_entry_after_2r = False
+                self.remaining_quantity = None
+                self.entry_price = None
+                self.entry_quantity = None
+                self.entry_side = None
+                self.sl_price = None
+                self.sl_order_id = None
+                self.trade_db_id = None
+                self.traded_symbol = None
+                self.nifty_bias = None
+                self.nifty_strength_pct = 0.0
+                self.pending_signals = []
+                self.retest_states = {}
                 # Refresh account balance for new day
                 self.starting_balance = self.get_account_balance()
                 self.account_balance = self.starting_balance

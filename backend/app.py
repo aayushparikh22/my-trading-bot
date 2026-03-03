@@ -131,7 +131,8 @@ def reconcile_open_trades_for_user(current_user):
 
 # Get IST time (UTC + 5:30 hours)
 def get_ist_time():
-    utc_now = datetime.utcnow()
+    from datetime import timezone
+    utc_now = datetime.now(timezone.utc)
     return utc_now + timedelta(hours=5, minutes=30)
 
 # Global cache for opening range triggers (LOCKED at 9:30 AM)
@@ -387,6 +388,19 @@ def get_default_user():
     if update_required:
         user.updated_at = get_ist_time()
         db.session.commit()
+
+    # === AUTO-LOGIN: If token looks stale or missing, try auto-refresh ===
+    try:
+        from app_files.kite_session import get_kite_session, _is_auto_login_enabled
+        if _is_auto_login_enabled() and user.kite_api_key:
+            _, fresh_token = get_kite_session()
+            if fresh_token and fresh_token != user.kite_access_token:
+                user.kite_access_token = fresh_token
+                user.updated_at = get_ist_time()
+                db.session.commit()
+    except Exception:
+        pass  # Non-fatal — auto-login is best-effort during user fetch
+
     return user
 
 # ===== Authentication =====
@@ -566,6 +580,43 @@ def kite_callback():
         except Exception:
             pass
         return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/kite/auto-login', methods=['POST'])
+def kite_auto_login():
+    """Trigger automated login to refresh access_token (requires TOTP credentials in .env)"""
+    current_user = get_default_user()
+    try:
+        from app_files.kite_session import get_kite_session, _is_auto_login_enabled, invalidate_session
+
+        if not _is_auto_login_enabled():
+            return jsonify({
+                'error': 'Auto-login not configured',
+                'hint': 'Set KITE_API_SECRET, KITE_PASSWORD, KITE_TOTP_KEY, and KITE_AUTO_LOGIN=true in .env'
+            }), 400
+
+        # Force a fresh login
+        invalidate_session()
+        _, fresh_token = get_kite_session(force_refresh=True)
+
+        # Save to DB
+        current_user.kite_access_token = fresh_token
+        current_user.updated_at = get_ist_time()
+        db.session.commit()
+
+        BotLog.create_log(current_user.id, 'AUTH', 'Access token auto-refreshed via auto-login', 'INFO')
+        return jsonify({
+            'message': 'Auto-login successful — access token refreshed',
+            'access_token': fresh_token
+        }), 200
+
+    except Exception as e:
+        db.session.rollback()
+        try:
+            BotLog.create_log(current_user.id, 'AUTH', f'Auto-login failed: {e}', 'ERROR')
+        except Exception:
+            pass
+        return jsonify({'error': f'Auto-login failed: {str(e)}'}), 500
 
 
 # ---- Config Routes ----
@@ -1513,9 +1564,15 @@ def get_live_market_data():
         return jsonify({'error': str(e), 'market_status': 'error'}), 500
 
 
+# Watchlist cache to reduce API calls
+_watchlist_cache = {'data': None, 'timestamp': 0}
+WATCHLIST_CACHE_TTL = 5.0  # Cache watchlist data for 5 seconds
+
 @app.route('/api/market/watchlist', methods=['GET'])
 def get_market_watchlist():
-    """Get live market data for all monitored symbols"""
+    """Get live market data for all monitored symbols - uses batch quotes + caching"""
+    global _watchlist_cache
+    
     current_user = get_default_user()
     
     if not current_user.kite_api_key or not current_user.kite_access_token:
@@ -1526,6 +1583,12 @@ def get_market_watchlist():
         from app_files import config
         from datetime import datetime
         import pytz
+        import time
+        
+        # Check cache first
+        now = time.time()
+        if _watchlist_cache['data'] and (now - _watchlist_cache['timestamp']) < WATCHLIST_CACHE_TTL:
+            return jsonify(_watchlist_cache['data']), 200
         
         kite = KiteService(current_user.kite_api_key, current_user.kite_access_token)
         
@@ -1533,20 +1596,27 @@ def get_market_watchlist():
         ist = pytz.timezone('Asia/Kolkata')
         current_time = datetime.now(ist)
         
-        watchlist_data = []
-        
-        # Fetch data for all monitored symbols
+        # Build list of instruments for BATCH quote fetch (SINGLE API call for all symbols!)
+        instruments = []
+        symbol_list = []
         for symbol_config in config.SYMBOLS_TO_MONITOR:
             symbol = symbol_config["symbol"]
             exchange = symbol_config["exchange"]
+            instruments.append(f"{exchange}:{symbol}")
+            symbol_list.append(symbol_config)
+        
+        # Fetch ALL quotes in ONE API call
+        all_quotes = kite.get_quotes_batch(instruments)
+        
+        watchlist_data = []
+        
+        for symbol_config in symbol_list:
+            symbol = symbol_config["symbol"]
+            exchange = symbol_config["exchange"]
+            instrument_key = f"{exchange}:{symbol}"
             
             try:
-                # Check if triggers are cached (LOCKED at 9:30 AM)
-                cached = get_cached_triggers(symbol)
-                
-                # Get quote (needed regardless)
-                quote = kite.get_quote(exchange, symbol)
-                
+                quote = all_quotes.get(instrument_key)
                 if not quote:
                     continue
                 
@@ -1555,55 +1625,24 @@ def get_market_watchlist():
                 open_price = ohlc.get('open', 0)
                 close_price = ohlc.get('close', 0)
                 
-                # Calculate buffer using same method as bot (dynamic ATR if enabled, else fixed)
-                buffer = calculate_atr_buffer_for_symbol(kite, exchange, symbol)
+                # Check if triggers are cached (LOCKED at 9:30 AM)
+                cached = get_cached_triggers(symbol)
                 
-                # Use cached triggers if available (LOCKED at 9:30 AM)
+                # Use cached values (no extra API calls needed when cached)
                 if cached:
                     high = cached['high']
                     low = cached['low']
                     buy_trigger = cached['buy']
                     sell_trigger = cached['sell']
+                    # Use fixed buffer from config (no ATR calculation to save API calls)
+                    buffer = config.TRIGGER_BUFFER
                 else:
-                    # Calculate trading levels from OPENING RANGE (9:15-9:30 AM), not daily OHLC
-                    import datetime as dt
-                    import pytz
-                    
-                    ist = pytz.timezone('Asia/Kolkata')
-                    now = dt.datetime.now(ist)
-                    
-                    # Try to get opening range candle (9:15-9:30 AM)
-                    high = None
-                    low = None
-                    
-                    try:
-                        start_time = now.replace(hour=9, minute=15, second=0, microsecond=0)
-                        end_time = now.replace(hour=9, minute=30, second=0, microsecond=0)
-                        
-                        candles = kite.get_historical_data(
-                            exchange, symbol,
-                            start_time,
-                            end_time,
-                            interval="15minute"
-                        )
-                        
-                        if candles and len(candles) > 0:
-                            # Use opening range high/low (LOCKED at 9:30 AM)
-                            high = candles[0].get('high', 0)
-                            low = candles[0].get('low', 0)
-                    except Exception:
-                        pass
-                    
-                    # Fallback to daily OHLC if opening range not available
-                    if not high or not low:
-                        high = ohlc.get('high', 0) if not high else high
-                        low = ohlc.get('low', 0) if not low else low
-                    
+                    # Fallback to daily OHLC (no historical API call)
+                    high = ohlc.get('high', 0)
+                    low = ohlc.get('low', 0)
+                    buffer = config.TRIGGER_BUFFER
                     buy_trigger = high + buffer if high else None
                     sell_trigger = low - buffer if low else None
-                    
-                    # Cache these triggers at opening range time
-                    cache_triggers(symbol, buy_trigger, sell_trigger, high, low)
                 
                 # Calculate price change
                 price_change = last_price - open_price if open_price else 0
@@ -1632,17 +1671,22 @@ def get_market_watchlist():
                 })
                 
             except Exception as e:
-                print(f"Error fetching data for {symbol}: {e}")
+                print(f"Error processing {symbol}: {e}")
                 continue
         
-        return jsonify({
+        response_data = {
             'success': True,
             'timestamp': current_time.isoformat(),
             'trigger_cache_locked_at': TRIGGER_CACHE_LOCK_TIME.isoformat() if TRIGGER_CACHE_LOCK_TIME else None,
             'trigger_cache_status': 'LOCKED (9:30 AM)' if TRIGGER_CACHE_LOCK_TIME else 'NOT YET LOCKED',
             'symbols': watchlist_data,
             'total_symbols': len(watchlist_data)
-        }), 200
+        }
+        
+        # Cache the response
+        _watchlist_cache = {'data': response_data, 'timestamp': now}
+        
+        return jsonify(response_data), 200
         
     except Exception as e:
         return jsonify({'error': str(e), 'success': False}), 500

@@ -50,6 +50,7 @@ export const configAPI = {
 // Kite OAuth API
 export const kiteAPI = {
   login: () => apiClient.get('/kite/login'),
+  autoLogin: () => apiClient.post('/kite/auto-login'),
 };
 
 // Bot Control API
