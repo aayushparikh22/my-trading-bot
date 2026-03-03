@@ -17,12 +17,14 @@ const LiveTerminal = ({ botStatus, botRunning }) => {
   const [manualSLPercent, setManualSLPercent] = useState('0.5');
   const [manualTPRatio, setManualTPRatio] = useState('2.0');
   const [submittingOrder, setSubmittingOrder] = useState(false);
+  const [showAllSymbols, setShowAllSymbols] = useState(false);
 
-  // Fetch live market data for all symbols
+  // Fetch live market data for focus symbols (or all)
   useEffect(() => {
     const fetchMarketData = async () => {
       try {
-        const response = await fetch('/api/market/watchlist');
+        const url = showAllSymbols ? '/api/market/watchlist?all=true' : '/api/market/watchlist';
+        const response = await fetch(url);
         const data = await response.json();
         if (data.success && data.symbols) {
           setWatchlistData(data.symbols);
@@ -35,7 +37,7 @@ const LiveTerminal = ({ botStatus, botRunning }) => {
     fetchMarketData();
     const interval = setInterval(fetchMarketData, 3000); // Update every 3 seconds
     return () => clearInterval(interval);
-  }, []);
+  }, [showAllSymbols]);
 
   // Fetch logs periodically
   useEffect(() => {
@@ -304,11 +306,27 @@ const LiveTerminal = ({ botStatus, botRunning }) => {
         </div>
       </div>
 
-      {/* Live Price Monitor for All Symbols */}
+      {/* Live Price Monitor for Focus Symbols */}
       {watchlistData.length > 0 && (
         <div className="price-monitor">
-          <div className="monitor-warning">
-            ⚠️ These are LIVE triggers (updating). Bot uses FIXED triggers from 9:15-9:30 AM candle.
+          <div className="monitor-header-row" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <div className="monitor-warning">
+              ⚠️ These are LIVE triggers (updating). Bot uses FIXED triggers from 9:15-9:30 AM candle.
+            </div>
+            <div style={{ display: 'flex', gap: '4px' }}>
+              <button
+                onClick={() => setShowAllSymbols(false)}
+                style={{ padding: '4px 10px', fontSize: '12px', borderRadius: '4px', border: '1px solid #374151', cursor: 'pointer', background: !showAllSymbols ? '#3b82f6' : '#1f2937', color: '#fff' }}
+              >
+                ⭐ Focus
+              </button>
+              <button
+                onClick={() => setShowAllSymbols(true)}
+                style={{ padding: '4px 10px', fontSize: '12px', borderRadius: '4px', border: '1px solid #374151', cursor: 'pointer', background: showAllSymbols ? '#3b82f6' : '#1f2937', color: '#fff' }}
+              >
+                All
+              </button>
+            </div>
           </div>
           <div className="symbols-grid">
             {watchlistData.map((symbol, index) => {

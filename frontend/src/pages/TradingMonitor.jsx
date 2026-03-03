@@ -111,12 +111,16 @@ const TradingMonitor = () => {
   const [lastUpdated, setLastUpdated] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [showAllSymbols, setShowAllSymbols] = useState(false);
 
   const fetchMonitorData = async () => {
     const now = new Date();
     try {
+      const watchUrl = showAllSymbols
+        ? `${API_BASE_URL}/market/watchlist?all=true`
+        : `${API_BASE_URL}/market/watchlist`;
       const [watchRes, posRes, openTradesRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/market/watchlist`),
+        fetch(watchUrl),
         fetch(`${API_BASE_URL}/portfolio/positions`),
         fetch(`${API_BASE_URL}/analytics/trades?status=OPEN&limit=100`),
       ]);
@@ -203,7 +207,7 @@ const TradingMonitor = () => {
     fetchMonitorData();
     const interval = setInterval(fetchMonitorData, POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, []);
+  }, [showAllSymbols]);
 
   const openPositionSymbols = useMemo(
     () => new Set(positions.map((position) => position.symbol)),
@@ -287,7 +291,23 @@ const TradingMonitor = () => {
       </div>
 
       <div className="triggers-section">
-        <h2>📍 Watchlist & Triggers</h2>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+          <h2>📍 Watchlist & Triggers {!showAllSymbols ? '(Focus)' : '(All)'}</h2>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            <button
+              onClick={() => setShowAllSymbols(false)}
+              style={{ padding: '5px 12px', fontSize: '13px', borderRadius: '6px', border: '1px solid #374151', cursor: 'pointer', background: !showAllSymbols ? '#3b82f6' : '#1f2937', color: '#fff', fontWeight: !showAllSymbols ? 'bold' : 'normal' }}
+            >
+              ⭐ Focus
+            </button>
+            <button
+              onClick={() => setShowAllSymbols(true)}
+              style={{ padding: '5px 12px', fontSize: '13px', borderRadius: '6px', border: '1px solid #374151', cursor: 'pointer', background: showAllSymbols ? '#3b82f6' : '#1f2937', color: '#fff', fontWeight: showAllSymbols ? 'bold' : 'normal' }}
+            >
+              📋 All NIFTY 50
+            </button>
+          </div>
+        </div>
         <div className="triggers-grid">
           {Array.isArray(watchlistData) && watchlistData.map((symbol) => (
             <div key={symbol.symbol} className={`trigger-card ${openPositionSymbols.has(symbol.symbol) ? 'active-symbol' : ''}`}>

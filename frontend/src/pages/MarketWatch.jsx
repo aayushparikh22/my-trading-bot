@@ -8,16 +8,18 @@ const MarketWatch = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [lastUpdate, setLastUpdate] = useState(null);
+  const [showAll, setShowAll] = useState(false);
 
   useEffect(() => {
     fetchWatchlistData();
     const interval = setInterval(fetchWatchlistData, 3000); // Update every 3 seconds
     return () => clearInterval(interval);
-  }, []);
+  }, [showAll]);
 
   const fetchWatchlistData = async () => {
     try {
-      const response = await fetch('/api/market/watchlist');
+      const url = showAll ? '/api/market/watchlist?all=true' : '/api/market/watchlist';
+      const response = await fetch(url);
       const data = await response.json();
       
       if (data.success) {
@@ -101,12 +103,28 @@ const MarketWatch = () => {
         </button>
         <h1>📈 Market Watch</h1>
         <div className="header-info">
-          <p className="subtitle">Real-time monitoring of all tracked symbols</p>
+          <p className="subtitle">
+            {showAll ? 'All NIFTY 50 Stocks' : 'Focus Symbols Only (auto-scan picks)'}
+          </p>
           {lastUpdate && (
             <p className="last-update">
               Last updated: {lastUpdate.toLocaleTimeString()}
             </p>
           )}
+        </div>
+        <div className="view-toggle">
+          <button
+            className={`toggle-btn ${!showAll ? 'active' : ''}`}
+            onClick={() => setShowAll(false)}
+          >
+            ⭐ Focus ({watchlistData.length})
+          </button>
+          <button
+            className={`toggle-btn ${showAll ? 'active' : ''}`}
+            onClick={() => { setShowAll(true); setLoading(true); }}
+          >
+            📋 All NIFTY 50
+          </button>
         </div>
       </div>
 

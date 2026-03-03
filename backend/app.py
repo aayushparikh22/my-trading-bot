@@ -1606,14 +1606,18 @@ def get_live_market_data():
         return jsonify({'error': str(e), 'market_status': 'error'}), 500
 
 
-# Watchlist cache to reduce API calls
-_watchlist_cache = {'data': None, 'timestamp': 0}
+# Watchlist cache to reduce API calls (keyed by focus_only flag)
+_watchlist_cache = {'focus': {'data': None, 'timestamp': 0}, 'all': {'data': None, 'timestamp': 0}}
 WATCHLIST_CACHE_TTL = 5.0  # Cache watchlist data for 5 seconds
 
 @app.route('/api/market/watchlist', methods=['GET'])
 def get_market_watchlist():
-    """Get live market data for all monitored symbols - uses batch quotes + caching"""
+    """Get live market data for monitored symbols. Defaults to FOCUS_SYMBOLS only.
+    Pass ?all=true to get all 50 NIFTY stocks."""
     global _watchlist_cache
+    
+    show_all = request.args.get('all', 'false').lower() == 'true'
+    cache_key = 'all' if show_all else 'focus'
     
     current_user = get_default_user()
     
@@ -1629,8 +1633,9 @@ def get_market_watchlist():
         
         # Check cache first
         now = time.time()
-        if _watchlist_cache['data'] and (now - _watchlist_cache['timestamp']) < WATCHLIST_CACHE_TTL:
-            return jsonify(_watchlist_cache['data']), 200
+        cache_entry = _watchlist_cache[cache_key]
+        if cache_entry['data'] and (now - cache_entry['timestamp']) < WATCHLIST_CACHE_TTL:
+            return jsonify(cache_entry['data']), 200
         
         kite = KiteService(current_user.kite_api_key, current_user.kite_access_token)
         
@@ -1638,12 +1643,20 @@ def get_market_watchlist():
         ist = pytz.timezone('Asia/Kolkata')
         current_time = datetime.now(ist)
         
+        # Determine which symbols to show
+        focus_symbols_set = set(config.FOCUS_SYMBOLS) if hasattr(config, 'FOCUS_SYMBOLS') else set()
+        
         # Build list of instruments for BATCH quote fetch (SINGLE API call for all symbols!)
         instruments = []
         symbol_list = []
         for symbol_config in config.SYMBOLS_TO_MONITOR:
             symbol = symbol_config["symbol"]
             exchange = symbol_config["exchange"]
+            
+            # If not showing all, filter to only FOCUS_SYMBOLS
+            if not show_all and focus_symbols_set and symbol not in focus_symbols_set:
+                continue
+            
             instruments.append(f"{exchange}:{symbol}")
             symbol_list.append(symbol_config)
         
@@ -1722,14 +1735,37 @@ def get_market_watchlist():
             'trigger_cache_locked_at': TRIGGER_CACHE_LOCK_TIME.isoformat() if TRIGGER_CACHE_LOCK_TIME else None,
             'trigger_cache_status': 'LOCKED (9:30 AM)' if TRIGGER_CACHE_LOCK_TIME else 'NOT YET LOCKED',
             'symbols': watchlist_data,
-            'total_symbols': len(watchlist_data)
+            'total_symbols': len(watchlist_data),
+            'focus_only': not show_all,
+            'focus_symbols': list(focus_symbols_set) if focus_symbols_set else []
         }
         
-        # Cache the response
-        _watchlist_cache = {'data': response_data, 'timestamp': now}
+        # Cache the response (keyed by focus/all)
+        _watchlist_cache[cache_key] = {'data': response_data, 'timestamp': now}
         
         return jsonify(response_data), 200
         
+    except Exception as e:
+        return jsonify({'error': str(e), 'success': False}), 500
+
+
+# ---- Focus Symbols ----
+
+@app.route('/api/config/focus-symbols', methods=['GET'])
+def get_focus_symbols():
+    """Get the current list of focus symbols (from auto-scan or config fallback)"""
+    try:
+        from app_files import config
+        focus = list(config.FOCUS_SYMBOLS) if hasattr(config, 'FOCUS_SYMBOLS') else []
+        all_symbols = [s['symbol'] for s in config.SYMBOLS_TO_MONITOR] if hasattr(config, 'SYMBOLS_TO_MONITOR') else []
+        return jsonify({
+            'success': True,
+            'focus_symbols': focus,
+            'all_symbols': all_symbols,
+            'auto_scan_enabled': getattr(config, 'AUTO_SCAN_SYMBOLS', False),
+            'total_focus': len(focus),
+            'total_all': len(all_symbols)
+        }), 200
     except Exception as e:
         return jsonify({'error': str(e), 'success': False}), 500
 

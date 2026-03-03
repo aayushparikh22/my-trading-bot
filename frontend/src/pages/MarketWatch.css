@@ -57,6 +57,35 @@
   margin: 0.25rem 0;
 }
 
+/* View Toggle */
+.view-toggle {
+  display: flex;
+  gap: 6px;
+  margin-top: 0.5rem;
+}
+
+.toggle-btn {
+  padding: 6px 16px;
+  font-size: 0.9rem;
+  border-radius: 6px;
+  border: 1px solid #374151;
+  cursor: pointer;
+  background: #1f2937;
+  color: #e5e7eb;
+  transition: all 0.2s;
+}
+
+.toggle-btn.active {
+  background: #3b82f6;
+  color: #fff;
+  font-weight: bold;
+  border-color: #3b82f6;
+}
+
+.toggle-btn:hover:not(.active) {
+  background: #374151;
+}
+
 /* Summary Cards */
 .watchlist-summary {
   display: grid;
