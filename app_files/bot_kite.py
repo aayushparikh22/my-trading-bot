@@ -995,6 +995,33 @@ class KiteApp:
             logger.error("Cannot start - market is closed")
             return False
         
+        # ===== AUTO-SCAN: Pick today's best ORB stocks =====
+        if getattr(config, 'AUTO_SCAN_SYMBOLS', False):
+            try:
+                from app_files.pre_session_scanner import run_pre_session_scan, run_pre_session_scan_from_files
+                self.log_to_db("🎯 AUTO-SCAN: Scanning all NIFTY 50 stocks for today's best ORB picks...")
+                logger.info("🎯 AUTO-SCAN: Running pre-session ORB readiness scanner...")
+                
+                top_n = getattr(config, 'AUTO_SCAN_TOP_N', 10)
+                use_api = getattr(config, 'AUTO_SCAN_USE_API', True)
+                
+                if use_api and self.api_key and self.access_token:
+                    today_focus = run_pre_session_scan(self.kite, top_n=top_n)
+                else:
+                    today_focus = run_pre_session_scan_from_files(top_n=top_n)
+                
+                if today_focus and len(today_focus) >= 3:
+                    config.FOCUS_SYMBOLS = today_focus
+                    config.EXCLUDED_SYMBOLS = []  # Clear exclusions — scanner handles ranking
+                    self.log_to_db(f"✅ AUTO-SCAN: Today's picks → {today_focus}")
+                    logger.info(f"✅ AUTO-SCAN: Today trading {len(today_focus)} stocks: {today_focus}")
+                else:
+                    self.log_to_db("⚠️  AUTO-SCAN: Too few results, using fallback FOCUS_SYMBOLS")
+                    logger.warning("⚠️  AUTO-SCAN: Too few results, using fallback FOCUS_SYMBOLS")
+            except Exception as e:
+                self.log_to_db(f"⚠️  AUTO-SCAN failed: {str(e)} — using fallback FOCUS_SYMBOLS")
+                logger.warning(f"⚠️  AUTO-SCAN failed: {e} — using fallback FOCUS_SYMBOLS")
+        
         # Get setup data for all symbols
         self.log_to_db("Fetching opening range data for all symbols...")
         symbols_data = self.get_symbols_setup_data()
@@ -2243,12 +2270,18 @@ class KiteApp:
         if not valid_signals:
             return []
         
-        # Get available capital (respecting hardstop)
-        hardstop_max = getattr(config, "HARDSTOP_EFFECTIVE_MAX", 80000)
-        available_capital = min(
-            self.account_balance * self.leverage * config.MARGIN_UTILIZATION,
-            hardstop_max
-        )
+        # Get available capital
+        dynamic_mode = getattr(config, "DYNAMIC_CAPITAL", False)
+        utilization = getattr(config, "CAPITAL_UTILIZATION", 0.85) if dynamic_mode else config.MARGIN_UTILIZATION
+        raw_capital = self.account_balance * self.leverage * utilization
+        
+        # Apply hardstop cap only when not in dynamic mode
+        use_hardstop = getattr(config, "USE_HARDSTOP_LIMIT", True)
+        if use_hardstop and not dynamic_mode:
+            hardstop_max = getattr(config, "HARDSTOP_EFFECTIVE_MAX", 80000)
+            available_capital = min(raw_capital, hardstop_max)
+        else:
+            available_capital = raw_capital
         
         # Subtract already allocated capital
         available_capital -= self.allocated_capital

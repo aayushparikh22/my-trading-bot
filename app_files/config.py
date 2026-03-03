@@ -10,21 +10,33 @@ KITE_DEBUG = os.getenv("KITE_DEBUG", "False").lower() == 'true'
 KITE_TIMEOUT = 30  # API request timeout in seconds
 
 # ===== TRADING CAPITAL & LEVERAGE =====
-STARTING_CAPITAL = 20000      # Your actual capital in INR
+STARTING_CAPITAL = 20000      # Fallback capital if Kite API is unreachable
 LEVERAGE = 5                  # Default 5x intraday margin leverage (MIS product type)
                               # NOTE: This value is for tracking/display only
                               # Kite API applies leverage AUTOMATICALLY based on product_type='MIS'
-EFFECTIVE_CAPITAL = STARTING_CAPITAL * LEVERAGE  # = 100,000 INR effective trading power
+EFFECTIVE_CAPITAL = STARTING_CAPITAL * LEVERAGE  # Fallback effective capital
 
 # Use leverage factor in quantity sizing (explicitly scale capital)
 USE_LEVERAGE_IN_SIZING = True
 
-# ===== HARDSTOP CAPITAL LIMIT =====
-# This is the MAXIMUM capital the bot will ever use, regardless of account balance
-HARDSTOP_CAPITAL = 20000      # Maximum base capital: ₹20,000
+# ===== DYNAMIC CAPITAL MODE =====
+# When True: Bot fetches actual Kite wallet balance at the start of each session
+#            and uses CAPITAL_UTILIZATION % of it. Profits compound automatically.
+#            Example: Wallet has ₹20,000 → uses 85% = ₹17,000 base → ₹85,000 with 5x leverage
+#            Next day wallet has ₹21,000 (profit) → uses 85% = ₹17,850 → ₹89,250 with leverage
+#            If wallet drops to ₹18,000 (loss) → uses 85% = ₹15,300 → ₹76,500 with leverage
+# When False: Uses fixed HARDSTOP_CAPITAL as the base (old behavior)
+DYNAMIC_CAPITAL = True
+CAPITAL_UTILIZATION = 0.85    # Use 85% of actual Kite wallet balance each session
+
+# ===== HARDSTOP CAPITAL LIMIT (Safety Net) =====
+# Only applies when DYNAMIC_CAPITAL = False (fixed mode)
+# When DYNAMIC_CAPITAL = True, this is IGNORED — wallet balance drives everything
+USE_HARDSTOP_LIMIT = False    # Disable fixed hardstop (dynamic mode overrides)
+HARDSTOP_CAPITAL = 20000      # Maximum base capital: ₹20,000 (only if USE_HARDSTOP_LIMIT=True)
 HARDSTOP_UTILIZATION = 0.80   # Use only 80% of hardstop: ₹16,000
 HARDSTOP_LEVERAGE = 5         # With 5x leverage: ₹80,000 effective max
-# Calculated limits:
+# Calculated limits (only used when USE_HARDSTOP_LIMIT=True):
 HARDSTOP_USABLE_CAPITAL = HARDSTOP_CAPITAL * HARDSTOP_UTILIZATION  # = ₹16,000
 HARDSTOP_EFFECTIVE_MAX = HARDSTOP_USABLE_CAPITAL * HARDSTOP_LEVERAGE  # = ₹80,000
 
@@ -53,11 +65,34 @@ CONFIDENCE_WEIGHT_OPEN_BIAS = 0.10   # Open position within candle range
 MIN_CONFIDENCE_SCORE = 0.40   # Minimum score to consider (0-1 scale, 0.4 = 40%)
 HIGH_CONFIDENCE_THRESHOLD = 0.70  # Score above this gets priority allocation
 
-# ===== BACKTEST-OPTIMIZED: SYMBOL FOCUS =====
-# Focus on Top 6 highest-performing NIFTY 50 stocks (backtest-validated)
-FOCUS_SYMBOLS = ["INFY", "RELIANCE", "TCS", "HDFCBANK", "BAJFINANCE", "SBIN"]
-EXCLUDED_SYMBOLS = ["ITC", "TATASTEEL", "AXISBANK", "ICICIBANK"]  # Exclude underperformers
-# Backtest insight: Top 6 symbols with optimized params = +34.7% return on ₹20K capital
+# ===== AUTO-SCAN: DYNAMIC SYMBOL SELECTION =====
+# When True: Before each session, the bot scans all NIFTY 50 stocks using the last 30 days
+# of data and auto-picks the top performers for ORB. FOCUS_SYMBOLS below becomes the fallback.
+# When False: Uses the hardcoded FOCUS_SYMBOLS list below (old behavior).
+AUTO_SCAN_SYMBOLS = True
+AUTO_SCAN_TOP_N = 10          # Pick top N stocks from the scan
+AUTO_SCAN_MIN_SCORE = 40.0    # Minimum ORB readiness score to qualify (0-100)
+AUTO_SCAN_MAX_PER_SECTOR = 2  # Max stocks per sector (diversification)
+AUTO_SCAN_USE_API = True      # True = fetch live data from Kite API | False = use local backtest files
+
+# ===== FALLBACK SYMBOL FOCUS (used when AUTO_SCAN_SYMBOLS = False) =====
+# Auto-scan picks for Mar 4, 2026 — based on last 30 trading days ORB readiness
+# Sector diversified: IT(2), Auto(2), Conglomerate, Banking(2), Pharma, FMCG(2), Power
+FOCUS_SYMBOLS = [
+    "TECHM",        # IT           — Score 64.5, WR 60%, PF 2.43
+    "HEROMOTOCO",   # Auto         — Score 64.1, WR 50%, PF 2.22
+    "ADANIENT",     # Conglomerate — Score 62.8, WR 60%, PF 2.07
+    "ICICIBANK",    # Banking      — Score 61.9, WR 60%, PF 1.79
+    "DRREDDY",      # Pharma       — Score 61.8, WR 60%, PF 1.20
+    "HDFCBANK",     # Banking      — Score 59.7, WR 50%, PF 1.51
+    "TATACONSUM",   # FMCG         — Score 59.4, WR 60%, PF 2.02
+    "MARUTI",       # Auto         — Score 58.3, WR 60%, PF 2.14
+    "ITC",          # FMCG         — Score 58.0, WR 50%, PF 1.84
+    "TCS",          # IT           — Score 56.8, WR 40%, PF 2.58
+]
+# NOTE: With AUTO_SCAN_SYMBOLS=True, this list is overridden daily by the scanner.
+# These are the fallback picks if the scanner fails.
+EXCLUDED_SYMBOLS = []  # Scanner handles ranking — no manual exclusions needed
 
 # ===== ENHANCEMENT: RELATIVE STRENGTH / GAP FILTER =====
 USE_GAP_FILTER = True              # Enable gap direction alignment filter

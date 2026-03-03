@@ -1,0 +1,434 @@
+[
+  {
+    "symbol": "INDUSINDBK",
+    "sector": "Banking",
+    "trades": 53,
+    "pnl": 5296.5,
+    "win_rate": 45.3,
+    "avg_pnl": 99.9,
+    "profit_factor": 1.51
+  },
+  {
+    "symbol": "TCS",
+    "sector": "IT",
+    "trades": 56,
+    "pnl": 5227.4,
+    "win_rate": 55.4,
+    "avg_pnl": 93.3,
+    "profit_factor": 1.84
+  },
+  {
+    "symbol": "INFY",
+    "sector": "IT",
+    "trades": 41,
+    "pnl": 4899.7,
+    "win_rate": 61.0,
+    "avg_pnl": 119.5,
+    "profit_factor": 1.95
+  },
+  {
+    "symbol": "NESTLEIND",
+    "sector": "FMCG",
+    "trades": 58,
+    "pnl": 4524.4,
+    "win_rate": 53.4,
+    "avg_pnl": 78.0,
+    "profit_factor": 1.59
+  },
+  {
+    "symbol": "SBILIFE",
+    "sector": "Insurance",
+    "trades": 38,
+    "pnl": 4286.3,
+    "win_rate": 60.5,
+    "avg_pnl": 112.8,
+    "profit_factor": 2.12
+  },
+  {
+    "symbol": "BAJFINANCE",
+    "sector": "Finance",
+    "trades": 62,
+    "pnl": 3720.0,
+    "win_rate": 46.8,
+    "avg_pnl": 60.0,
+    "profit_factor": 1.33
+  },
+  {
+    "symbol": "HINDUNILVR",
+    "sector": "FMCG",
+    "trades": 52,
+    "pnl": 2996.7,
+    "win_rate": 53.8,
+    "avg_pnl": 57.6,
+    "profit_factor": 1.48
+  },
+  {
+    "symbol": "RELIANCE",
+    "sector": "Energy",
+    "trades": 65,
+    "pnl": 2822.7,
+    "win_rate": 53.8,
+    "avg_pnl": 43.4,
+    "profit_factor": 1.36
+  },
+  {
+    "symbol": "APOLLOHOSP",
+    "sector": "Healthcare",
+    "trades": 39,
+    "pnl": 2646.4,
+    "win_rate": 53.8,
+    "avg_pnl": 67.9,
+    "profit_factor": 1.64
+  },
+  {
+    "symbol": "BAJAJ-AUTO",
+    "sector": "Auto",
+    "trades": 59,
+    "pnl": 2564.3,
+    "win_rate": 52.5,
+    "avg_pnl": 43.5,
+    "profit_factor": 1.3
+  },
+  {
+    "symbol": "COALINDIA",
+    "sector": "Mining",
+    "trades": 55,
+    "pnl": 2427.5,
+    "win_rate": 50.9,
+    "avg_pnl": 44.1,
+    "profit_factor": 1.31
+  },
+  {
+    "symbol": "HEROMOTOCO",
+    "sector": "Auto",
+    "trades": 53,
+    "pnl": 2061.8,
+    "win_rate": 49.1,
+    "avg_pnl": 38.9,
+    "profit_factor": 1.26
+  },
+  {
+    "symbol": "HDFCLIFE",
+    "sector": "Insurance",
+    "trades": 42,
+    "pnl": 1778.8,
+    "win_rate": 40.5,
+    "avg_pnl": 42.4,
+    "profit_factor": 1.29
+  },
+  {
+    "symbol": "M&M",
+    "sector": "Auto",
+    "trades": 34,
+    "pnl": 1762.0,
+    "win_rate": 47.1,
+    "avg_pnl": 51.8,
+    "profit_factor": 1.39
+  },
+  {
+    "symbol": "POWERGRID",
+    "sector": "Power",
+    "trades": 43,
+    "pnl": 1545.4,
+    "win_rate": 44.2,
+    "avg_pnl": 35.9,
+    "profit_factor": 1.23
+  },
+  {
+    "symbol": "NTPC",
+    "sector": "Power",
+    "trades": 51,
+    "pnl": 1413.7,
+    "win_rate": 47.1,
+    "avg_pnl": 27.7,
+    "profit_factor": 1.2
+  },
+  {
+    "symbol": "LT",
+    "sector": "Infra",
+    "trades": 57,
+    "pnl": 1339.5,
+    "win_rate": 52.6,
+    "avg_pnl": 23.5,
+    "profit_factor": 1.17
+  },
+  {
+    "symbol": "SUNPHARMA",
+    "sector": "Pharma",
+    "trades": 39,
+    "pnl": 1068.9,
+    "win_rate": 48.7,
+    "avg_pnl": 27.4,
+    "profit_factor": 1.19
+  },
+  {
+    "symbol": "SHRIRAMFIN",
+    "sector": "Finance",
+    "trades": 32,
+    "pnl": 978.8,
+    "win_rate": 43.8,
+    "avg_pnl": 30.6,
+    "profit_factor": 1.14
+  },
+  {
+    "symbol": "WIPRO",
+    "sector": "IT",
+    "trades": 31,
+    "pnl": 409.4,
+    "win_rate": 45.2,
+    "avg_pnl": 13.2,
+    "profit_factor": 1.07
+  },
+  {
+    "symbol": "TATACONSUM",
+    "sector": "FMCG",
+    "trades": 48,
+    "pnl": 368.1,
+    "win_rate": 43.8,
+    "avg_pnl": 7.7,
+    "profit_factor": 1.04
+  },
+  {
+    "symbol": "HCLTECH",
+    "sector": "IT",
+    "trades": 37,
+    "pnl": 128.5,
+    "win_rate": 45.9,
+    "avg_pnl": 3.5,
+    "profit_factor": 1.02
+  },
+  {
+    "symbol": "ASIANPAINT",
+    "sector": "Paints",
+    "trades": 58,
+    "pnl": 52.7,
+    "win_rate": 51.7,
+    "avg_pnl": 0.9,
+    "profit_factor": 1.01
+  },
+  {
+    "symbol": "ULTRACEMCO",
+    "sector": "Cement",
+    "trades": 37,
+    "pnl": -8.2,
+    "win_rate": 45.9,
+    "avg_pnl": -0.2,
+    "profit_factor": 1.0
+  },
+  {
+    "symbol": "GRASIM",
+    "sector": "Cement",
+    "trades": 54,
+    "pnl": -53.9,
+    "win_rate": 44.4,
+    "avg_pnl": -1.0,
+    "profit_factor": 0.99
+  },
+  {
+    "symbol": "HDFCBANK",
+    "sector": "Banking",
+    "trades": 36,
+    "pnl": -204.2,
+    "win_rate": 47.2,
+    "avg_pnl": -5.7,
+    "profit_factor": 0.96
+  },
+  {
+    "symbol": "EICHERMOT",
+    "sector": "Auto",
+    "trades": 42,
+    "pnl": -480.9,
+    "win_rate": 47.6,
+    "avg_pnl": -11.4,
+    "profit_factor": 0.93
+  },
+  {
+    "symbol": "TITAN",
+    "sector": "Consumer",
+    "trades": 43,
+    "pnl": -556.7,
+    "win_rate": 41.9,
+    "avg_pnl": -12.9,
+    "profit_factor": 0.92
+  },
+  {
+    "symbol": "HINDALCO",
+    "sector": "Metals",
+    "trades": 44,
+    "pnl": -568.3,
+    "win_rate": 43.2,
+    "avg_pnl": -12.9,
+    "profit_factor": 0.94
+  },
+  {
+    "symbol": "BHARTIARTL",
+    "sector": "Telecom",
+    "trades": 31,
+    "pnl": -746.7,
+    "win_rate": 41.9,
+    "avg_pnl": -24.1,
+    "profit_factor": 0.86
+  },
+  {
+    "symbol": "MARUTI",
+    "sector": "Auto",
+    "trades": 53,
+    "pnl": -989.8,
+    "win_rate": 35.8,
+    "avg_pnl": -18.7,
+    "profit_factor": 0.87
+  },
+  {
+    "symbol": "SBIN",
+    "sector": "Banking",
+    "trades": 90,
+    "pnl": -1009.5,
+    "win_rate": 45.6,
+    "avg_pnl": -11.2,
+    "profit_factor": 0.92
+  },
+  {
+    "symbol": "TECHM",
+    "sector": "IT",
+    "trades": 51,
+    "pnl": -1093.1,
+    "win_rate": 43.1,
+    "avg_pnl": -21.4,
+    "profit_factor": 0.87
+  },
+  {
+    "symbol": "ADANIPORTS",
+    "sector": "Infra",
+    "trades": 57,
+    "pnl": -1139.6,
+    "win_rate": 40.4,
+    "avg_pnl": -20.0,
+    "profit_factor": 0.9
+  },
+  {
+    "symbol": "AXISBANK",
+    "sector": "Banking",
+    "trades": 61,
+    "pnl": -1431.4,
+    "win_rate": 41.0,
+    "avg_pnl": -23.5,
+    "profit_factor": 0.85
+  },
+  {
+    "symbol": "ONGC",
+    "sector": "Energy",
+    "trades": 55,
+    "pnl": -1723.7,
+    "win_rate": 40.0,
+    "avg_pnl": -31.3,
+    "profit_factor": 0.82
+  },
+  {
+    "symbol": "TATASTEEL",
+    "sector": "Metals",
+    "trades": 61,
+    "pnl": -1859.9,
+    "win_rate": 36.1,
+    "avg_pnl": -30.5,
+    "profit_factor": 0.85
+  },
+  {
+    "symbol": "KOTAKBANK",
+    "sector": "Banking",
+    "trades": 42,
+    "pnl": -1901.9,
+    "win_rate": 38.1,
+    "avg_pnl": -45.3,
+    "profit_factor": 0.73
+  },
+  {
+    "symbol": "CIPLA",
+    "sector": "Pharma",
+    "trades": 43,
+    "pnl": -2053.9,
+    "win_rate": 39.5,
+    "avg_pnl": -47.8,
+    "profit_factor": 0.73
+  },
+  {
+    "symbol": "ADANIENT",
+    "sector": "Conglomerate",
+    "trades": 50,
+    "pnl": -2235.0,
+    "win_rate": 38.0,
+    "avg_pnl": -44.7,
+    "profit_factor": 0.82
+  },
+  {
+    "symbol": "BPCL",
+    "sector": "Energy",
+    "trades": 50,
+    "pnl": -2286.2,
+    "win_rate": 40.0,
+    "avg_pnl": -45.7,
+    "profit_factor": 0.81
+  },
+  {
+    "symbol": "JSWSTEEL",
+    "sector": "Metals",
+    "trades": 51,
+    "pnl": -2698.4,
+    "win_rate": 39.2,
+    "avg_pnl": -52.9,
+    "profit_factor": 0.73
+  },
+  {
+    "symbol": "TRENT",
+    "sector": "Consumer",
+    "trades": 58,
+    "pnl": -2976.0,
+    "win_rate": 41.4,
+    "avg_pnl": -51.3,
+    "profit_factor": 0.77
+  },
+  {
+    "symbol": "ITC",
+    "sector": "FMCG",
+    "trades": 90,
+    "pnl": -3068.4,
+    "win_rate": 42.2,
+    "avg_pnl": -34.1,
+    "profit_factor": 0.78
+  },
+  {
+    "symbol": "BAJAJFINSV",
+    "sector": "Finance",
+    "trades": 60,
+    "pnl": -4859.2,
+    "win_rate": 35.0,
+    "avg_pnl": -81.0,
+    "profit_factor": 0.6
+  },
+  {
+    "symbol": "DRREDDY",
+    "sector": "Pharma",
+    "trades": 42,
+    "pnl": -5314.8,
+    "win_rate": 31.0,
+    "avg_pnl": -126.5,
+    "profit_factor": 0.46
+  },
+  {
+    "symbol": "BRITANNIA",
+    "sector": "FMCG",
+    "trades": 58,
+    "pnl": -5712.2,
+    "win_rate": 29.3,
+    "avg_pnl": -98.5,
+    "profit_factor": 0.52
+  },
+  {
+    "symbol": "ICICIBANK",
+    "sector": "Banking",
+    "trades": 51,
+    "pnl": -5844.3,
+    "win_rate": 23.5,
+    "avg_pnl": -114.6,
+    "profit_factor": 0.34
+  }
+]

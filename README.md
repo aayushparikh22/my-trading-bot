@@ -1,6 +1,6 @@
 # 🤖 ORB Scalping Trading Bot — Complete Documentation
 
-> **Automated rule-based intraday trading bot** for the Indian stock market (NSE) using the **Opening Range Breakout (ORB)** strategy with VWAP confirmation, multi-stock portfolio management, and confidence-based capital allocation — powered by the [Zerodha Kite Connect API](https://kite.trade).
+> **Automated rule-based intraday trading bot** for the Indian stock market (NSE) using the **Opening Range Breakout (ORB)** strategy with VWAP confirmation, multi-stock portfolio management, confidence-based capital allocation, and **pre-session auto-scanning** — powered by the [Zerodha Kite Connect API](https://kite.trade).
 >
 > *Note: This bot is entirely rule-based — no machine learning or trained models are used. The confidence scoring system is a hand-tuned weighted formula, not a learned model.*
 
@@ -14,16 +14,17 @@
 4. [Signal Filters & Enhancements](#4-signal-filters--enhancements)
 5. [Exit Strategy — 3-Stage Partial Booking](#5-exit-strategy--3-stage-partial-booking)
 6. [Multi-Stock Mode & Confidence Scoring](#6-multi-stock-mode--confidence-scoring)
-7. [Auto-Login System](#7-auto-login-system)
-8. [Risk Management](#8-risk-management)
-9. [Frontend Dashboard](#9-frontend-dashboard)
-10. [Backend API](#10-backend-api)
-11. [Backtesting Framework](#11-backtesting-framework)
-12. [Configuration Reference](#12-configuration-reference)
-13. [Setup & Installation](#13-setup--installation)
-14. [Environment Variables](#14-environment-variables)
-15. [Running the Bot](#15-running-the-bot)
-16. [Deployment](#16-deployment)
+7. [Pre-Session Auto-Scanner](#7-pre-session-auto-scanner)
+8. [Auto-Login System](#8-auto-login-system)
+9. [Risk Management](#9-risk-management)
+10. [Frontend Dashboard](#10-frontend-dashboard)
+11. [Backend API](#11-backend-api)
+12. [Backtesting Framework](#12-backtesting-framework)
+13. [Configuration Reference](#13-configuration-reference)
+14. [Setup & Installation](#14-setup--installation)
+15. [Environment Variables](#15-environment-variables)
+16. [Running the Bot](#16-running-the-bot)
+17. [Deployment](#17-deployment)
 
 ---
 
@@ -54,7 +55,7 @@
 │                                                                     │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐          │
 │  │  bot_kite.py  │  │ kite_service │  │   config.py      │          │
-│  │  (3500+ lines)│  │  (580 lines) │  │  (360 lines)     │          │
+│  │  (3550+ lines)│  │  (580 lines) │  │  (406 lines)     │          │
 │  │  40+ methods  │  │  25+ methods │  │  (all params)    │          │
 │  └──────┬───────┘  └──────┬───────┘  └──────────────────┘          │
 │         │                 │                                          │
@@ -64,10 +65,11 @@
 │  │   (Orders, Quotes, Historical)     │                             │
 │  └────────────────────────────────────┘                             │
 │                                                                     │
-│  ┌──────────────┐  ┌──────────────┐                                 │
-│  │ kite_login.py │  │kite_session.py│  ← Auto-Login System          │
-│  │ (5-step auth) │  │(token manager)│                               │
-│  └──────────────┘  └──────────────┘                                 │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────┐      │
+│  │ kite_login.py │  │kite_session.py│  │pre_session_scanner.py│     │
+│  │ (5-step auth) │  │(token manager)│  │ (643 lines, 8 scores)│     │
+│  └──────────────┘  └──────────────┘  └──────────────────────┘      │
+│                                        ↑ Auto-picks best ORB stocks │
 └─────────────────────────────────────────────────────────────────────┘
                │
                ▼
@@ -76,15 +78,16 @@
 │                                                                     │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐          │
 │  │run_backtest.py│  │optimize_     │  │ analyze_results  │          │
-│  │(1020 lines)   │  │params.py     │  │    .py           │          │
+│  │(1022 lines)   │  │params.py     │  │    .py           │          │
 │  │Full simulator │  │(500 lines)   │  │ Deep diagnostics │          │
 │  └──────┬───────┘  │810-combo grid │  └──────────────────┘          │
 │         │          └──────────────┘                                  │
 │         ▼                                                            │
-│  ┌────────────────┐  ┌────────────────┐                             │
-│  │download_data.py │  │ data/*.json    │  10 stocks × 2 intervals   │
-│  │ (Kite hist API) │  │ results/*.csv  │  3 months of candle data   │
-│  └────────────────┘  └────────────────┘                             │
+│  ┌────────────────┐  ┌────────────────┐  ┌──────────────────────┐   │
+│  │download_data.py │  │ data/*.json    │  │orb_readiness_scanner │   │
+│  │ (Kite hist API) │  │ 50 stocks × 2  │  │   + scan_all_stocks  │   │
+│  └────────────────┘  │ intervals      │  │   (stock ranking)    │   │
+│                      └────────────────┘  └──────────────────────┘   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -106,11 +109,12 @@
 ```
 Trading-bot/
 ├── app_files/                  # Core bot engine
-│   ├── bot_kite.py             # Main trading algorithm (3500+ lines, 40+ methods)
-│   ├── config.py               # All strategy parameters & configuration (360 lines)
+│   ├── bot_kite.py             # Main trading algorithm (3550+ lines, 40+ methods)
+│   ├── config.py               # All strategy parameters & configuration (406 lines)
 │   ├── kite_service.py         # Kite API wrapper with caching & rate limiting (580 lines)
 │   ├── kite_login.py           # Automated 5-step Kite login (TOTP 2FA)
 │   ├── kite_session.py         # Session manager with token persistence
+│   ├── pre_session_scanner.py  # Auto-picks best ORB stocks before each session (643 lines)
 │   └── requirements.txt        # Python dependencies (bot)
 │
 ├── backend/                    # Flask REST API
@@ -138,21 +142,26 @@ Trading-bot/
 │   └── package.json
 │
 ├── backtest/                   # Backtesting framework
-│   ├── run_backtest.py         # Full strategy backtester (1020 lines)
+│   ├── run_backtest.py         # Full strategy backtester (1022 lines)
 │   ├── optimize_params.py      # Parameter grid search optimizer (500 lines, 810 combos)
 │   ├── analyze_results.py      # Deep trade analysis & diagnostics
 │   ├── download_data.py        # Historical data downloader from Kite API
-│   ├── data/                   # Downloaded candle data (10 stocks × 5min + 15min)
+│   ├── orb_readiness_scanner.py # ORB readiness scoring engine (573 lines, 8 metrics)
+│   ├── scan_all_stocks.py      # Rank all NIFTY 50 stocks by ORB performance
+│   ├── data/                   # Downloaded candle data (50 stocks × 5min + 15min)
 │   │   ├── HDFCBANK_5min.json, HDFCBANK_15min.json
 │   │   ├── RELIANCE_5min.json, RELIANCE_15min.json
-│   │   ├── ... (10 stock pairs + NIFTY50 + manifest.json)
+│   │   ├── NIFTY50_5min.json, NIFTY50_15min.json
+│   │   ├── ... (50 stock pairs + NIFTY50 + NIFTYBEES + manifest.json)
 │   └── results/                # Backtest output
 │       ├── backtest_results.json
+│       ├── pre_session_scan.json  # Auto-scanner results
 │       ├── equity_curve.csv
 │       └── trades.csv
 │
 ├── .env                        # Credentials (gitignored)
-├── access_token.txt            # Cached Kite token (auto-managed)
+├── .gitignore                  # Git ignore rules
+├── access_token.txt            # Cached Kite token (auto-managed, gitignored)
 ├── trigger_cache.json          # Opening range trigger persistence
 └── README.md
 ```
@@ -166,9 +175,18 @@ The bot implements an **Opening Range Breakout (ORB)** strategy enhanced with VW
 ### 3.1 Daily Lifecycle
 
 ```
+09:00 ──── Pre-Session Scanner Runs ────────────────────────────
+  │
+  │   PHASE 0: AUTO-SCAN (before market open)
+  │   • Scan all 50 NIFTY stocks using last 30 days of data
+  │   • Score each stock on 8 ORB-specific metrics
+  │   • Pick top 10 stocks with sector diversification
+  │   • Update FOCUS_SYMBOLS dynamically for today
+  │
 09:15 ──── Market Opens ────────────────────────────────────────
   │
   │   PHASE 1: SETUP (09:15 → 09:30)
+  │   • Fetch actual wallet balance (Dynamic Capital Mode)
   │   • Fetch 15-minute opening candle (High, Low, Open, Close)
   │   • Calculate VWAP (Volume Weighted Average Price)
   │   • Calculate dynamic ATR buffer (0.15 × ATR(10))
@@ -320,14 +338,41 @@ open_position_in_range = (open - low) / (high - low)
 
 ### 4.3 Symbol Focus (Backtest-Validated)
 
-The bot focuses on the **top 6 highest-performing NIFTY 50 stocks** and excludes underperformers:
+The bot focuses on **11 backtest-validated NIFTY 50 top performers** across 9 sectors, and excludes 11 underperformers:
 
 ```python
-FOCUS_SYMBOLS = ["INFY", "RELIANCE", "TCS", "HDFCBANK", "BAJFINANCE", "SBIN"]
-EXCLUDED_SYMBOLS = ["ITC", "TATASTEEL", "AXISBANK", "ICICIBANK"]
+# Top 11 stocks — backtest-validated on Jun 2024 → Mar 2026 data
+FOCUS_SYMBOLS = [
+    "INDUSINDBK",   # Banking    — #1 overall, +₹5,296, PF 1.51
+    "TCS",          # IT         — #2 overall, +₹5,227, PF 1.84
+    "INFY",         # IT         — #3 overall, +₹4,900, PF 1.95, 61% WR
+    "NESTLEIND",    # FMCG       — #4 overall, +₹4,524, PF 1.59
+    "SBILIFE",      # Insurance  — #5 overall, +₹4,286, PF 2.12 (best PF)
+    "BAJFINANCE",   # Finance    — #6 overall, +₹3,720, PF 1.33
+    "RELIANCE",     # Energy     — #8 overall, +₹2,823, PF 1.36
+    "APOLLOHOSP",   # Healthcare — #9 overall, +₹2,646, PF 1.64
+    "BAJAJ-AUTO",   # Auto       — #10 overall, +₹2,564, PF 1.30
+    "COALINDIA",    # Mining     — #11 overall, +₹2,428, PF 1.31
+    "HDFCBANK",     # Banking    — #12 overall, -₹204, PF 0.98
+]
+# Portfolio backtest: +₹16,007 (+20.01%), 52.2% WR, PF 1.54, MaxDD 1.71%
+
+EXCLUDED_SYMBOLS = [
+    "ICICIBANK",    # -₹5,844 — worst performer
+    "BRITANNIA",    # -₹5,712
+    "DRREDDY",      # -₹5,315
+    "BAJAJFINSV",   # -₹4,859
+    "ITC",          # -₹3,068
+    "TRENT",        # -₹2,976
+    "JSWSTEEL",     # -₹2,698
+    "BPCL",         # -₹2,286
+    "TATASTEEL",    # -₹1,860
+    "KOTAKBANK",    # -₹1,902
+    "AXISBANK",     # -₹1,431
+]
 ```
 
-> **Backtest insight**: Top 6 symbols with optimized params = +34.7% return on ₹20K capital.
+> **Note**: When `AUTO_SCAN_SYMBOLS = True` (default), the pre-session scanner overrides `FOCUS_SYMBOLS` daily with data-driven picks. The hardcoded list above serves as a fallback if the scanner fails.
 
 ---
 
@@ -398,7 +443,8 @@ When `MULTI_STOCK_MODE = True`, the bot scans up to 20 stocks simultaneously and
 
 ```
 For each of 50 NIFTY stocks (capped at MAX_STOCKS_TO_SCAN = 20):
-  ├── Filter by FOCUS_SYMBOLS / EXCLUDED_SYMBOLS
+  ├── Pre-session scanner auto-picks today's FOCUS_SYMBOLS (top 10)
+  ├── Filter by auto-selected FOCUS_SYMBOLS / EXCLUDED_SYMBOLS
   ├── Fetch 15-min opening candle → calculate triggers
   ├── Every 30s: fetch 5-min candle, check breakout
   ├── If breakout: run all filters (9-stage pipeline)
@@ -440,11 +486,80 @@ MIN_CONFIDENCE = 0.40            # Minimum score to trade
 
 ---
 
-## 7. Auto-Login System
+## 7. Pre-Session Auto-Scanner
+
+A **brand-new system** (`pre_session_scanner.py`, 643 lines) that automatically picks the best stocks for ORB trading before each session. When `AUTO_SCAN_SYMBOLS = True` (default), the scanner replaces the hardcoded `FOCUS_SYMBOLS` with data-driven picks every day.
+
+### 7.1 How It Works
+
+```
+┌──────────────────────────────────────────────────────────┐
+│         PRE-SESSION SCANNER (runs at ~9:15 AM)           │
+│                                                          │
+│  1. Fetch last 30 days of 5-min + 15-min candle data     │
+│     for ALL 50 NIFTY stocks (from Kite API or local)     │
+│                                                          │
+│  2. Score each stock on 8 ORB-specific metrics:          │
+│     ├── Volatility (ATR%) — needs enough movement        │
+│     ├── Volume Trend — rising volume = better            │
+│     ├── Clean Breakout Ratio — how often ORB triggers    │
+│     ├── Gap Quality — moderate gaps (0.3-1.5%) ideal     │
+│     ├── Recent ORB Win Rate (HEAVILY WEIGHTED: 25%)      │
+│     ├── R-Multiple Quality — how far winners run         │
+│     ├── Trend Clarity — clear trend = better signals     │
+│     └── Range Quality — opening range 0.3-1.5% ideal    │
+│                                                          │
+│  3. Rank stocks by composite score                       │
+│                                                          │
+│  4. Pick top N stocks with sector diversification        │
+│     (max 2 per sector to avoid correlation)              │
+│                                                          │
+│  5. Update config.FOCUS_SYMBOLS for today's session      │
+└──────────────────────────────────────────────────────────┘
+```
+
+### 7.2 Scoring Weights
+
+| # | Metric | Weight | What It Measures |
+|---|--------|--------|-----------------|
+| 1 | Recent ORB Win Rate | 25% | Simulated ORB win rate over last 10-30 days |
+| 2 | Volatility (ATR%) | 15% | Recent average true range as % of price |
+| 3 | Clean Breakout Ratio | 15% | Fraction of days with clean (non-choppy) breakouts |
+| 4 | R-Multiple Quality | 15% | Average risk-reward on simulated ORB trades |
+| 5 | Volume Trend | 10% | Is volume rising or falling recently? |
+| 6 | Trend Clarity | 10% | How directional (up/down) is the stock? |
+| 7 | Gap Quality | 5% | Average gap size (moderate = best) |
+| 8 | Range Quality | 5% | Average opening range as % of price |
+
+### 7.3 Configuration
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `AUTO_SCAN_SYMBOLS` | `True` | Enable pre-session auto-scanning |
+| `AUTO_SCAN_TOP_N` | 10 | Pick top N stocks from scan |
+| `AUTO_SCAN_MIN_SCORE` | 40.0 | Minimum composite score to qualify (0-100) |
+| `AUTO_SCAN_MAX_PER_SECTOR` | 2 | Max stocks per sector (diversification) |
+| `AUTO_SCAN_USE_API` | `True` | `True` = live Kite API data, `False` = local backtest files |
+
+### 7.4 Fallback Mode
+
+If the scanner fails (API unavailable, insufficient data), the bot falls back to the hardcoded `FOCUS_SYMBOLS` from `config.py`. The scanner can also run offline using local backtest data files via `run_pre_session_scan_from_files()`.
+
+### 7.5 Related Files
+
+| File | Purpose |
+|------|---------|
+| `app_files/pre_session_scanner.py` | Live scanner (Kite API or local files) |
+| `backtest/orb_readiness_scanner.py` | ORB readiness scoring engine (573 lines, reusable) |
+| `backtest/scan_all_stocks.py` | Ranks all NIFTY 50 stocks by full backtest performance |
+
+---
+
+## 8. Auto-Login System
 
 Zerodha's access token expires every 24 hours. The bot includes a **fully automated login system** that handles this without manual intervention.
 
-### 7.1 How It Works
+### 8.1 How It Works
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -468,7 +583,7 @@ Zerodha's access token expires every 24 hours. The bot includes a **fully automa
 └──────────────────────────────────────────────────────────┘
 ```
 
-### 7.2 5-Step Login Process (`kite_login.py`)
+### 8.2 5-Step Login Process (`kite_login.py`)
 
 | Step | Action | Detail |
 |------|--------|--------|
@@ -480,51 +595,74 @@ Zerodha's access token expires every 24 hours. The bot includes a **fully automa
 
 The token is saved to `access_token.txt` and cached in memory for 1 hour.
 
-### 7.3 Dashboard Refresh Button
+### 8.3 Dashboard Refresh Button
 
 The frontend dashboard has a **🔑 Refresh Login** button that calls `POST /api/kite/auto-login` to force a fresh token generation. The backend also auto-refreshes the token when starting the bot if auto-login is configured.
 
 ---
 
-## 8. Risk Management
+## 9. Risk Management
 
-### 8.1 Capital Guardrails
+### 9.1 Dynamic Capital Mode
+
+The bot supports two capital modes:
+
+**Dynamic Capital (default, `DYNAMIC_CAPITAL = True`):**
+```
+At session start → Fetch actual Kite wallet balance
+   → Apply CAPITAL_UTILIZATION (85%) → Base capital for the day
+   → Apply LEVERAGE (5x MIS) → Effective capital
+   → Profits compound automatically day to day
+
+Example:
+  Day 1: Wallet ₹20,000 → 85% = ₹17,000 base → ₹85,000 effective
+  Day 2: Wallet ₹21,000 (profit) → 85% = ₹17,850 → ₹89,250 effective
+  Day 3: Wallet ₹18,000 (loss) → 85% = ₹15,300 → ₹76,500 effective
+```
+
+**Fixed Capital (`DYNAMIC_CAPITAL = False`):**
+```
+Uses HARDSTOP_CAPITAL = ₹20,000
+   × HARDSTOP_UTILIZATION = 80% → ₹16,000 base
+   × HARDSTOP_LEVERAGE = 5x → ₹80,000 effective max
+```
+
+### 9.2 Capital Guardrails
 
 ```
-STARTING_CAPITAL = ₹20,000
+STARTING_CAPITAL = ₹20,000 (fallback if API unreachable)
        × LEVERAGE = 5x (MIS intraday)
        = ₹100,000 effective
 
-HARDSTOP_UTILIZATION = 80%
-       = ₹80,000 maximum deployed
+CAPITAL_UTILIZATION = 85% (of wallet balance)
+MARGIN_UTILIZATION = 85% per trade
 
-MARGIN_UTILIZATION = 85%
-       = ₹68,000 per trade (single stock)
-       = split across 2 positions max (multi-stock)
+Split across MAX_POSITIONS = 2 (multi-stock mode)
 ```
 
-### 8.2 Loss Limits
+### 9.3 Loss Limits
 
 | Protection | Setting | Behavior |
 |-----------|---------|---------|
-| **Daily Loss Limit** | 2% of capital (₹400) | Auto-closes all positions, stops trading for the day |
-| **Per-Trade SL** | 100% of calculated risk | Full range SL (backtest-optimized from 50%) |
+| **Daily Loss Limit** | 2% of capital | Auto-closes all positions, stops trading for the day |
+| **Per-Trade SL** | 100% of calculated risk | Full range SL (backtest-optimized from 75%) |
 | **Breakeven Lock** | After 1R profit | SL moves to entry price — remaining 55% is risk-free |
 | **Auto-Exit** | 3:25 PM IST | Closes all MIS positions before market close |
 | **ATR Trailing** | After 1.5R | Trailing stop follows price using 1.2 × ATR |
 | **Position Restoration** | On bot restart | Restores active positions from broker to resume SL monitoring |
 
-### 8.3 Order Safety
+### 9.4 Order Safety
 
 - **Smart Limit Orders**: Uses stop-limit orders instead of market orders (`LIMIT_ORDER_BUFFER = ₹0.20`)
 - **Order Timeout**: Converts to market order if limit not filled within 30 seconds
 - **Rate Limiting**: Built-in API rate limiter in `kite_service.py` (1s between calls, 10s backoff on rate limit)
 - **Quote Caching**: 5-second TTL quote cache, instrument cache (1 hour), batch quotes (up to 500 in one call)
 - **Trade Reconciliation**: Backend auto-detects when SL/TP orders fill on the exchange, closes trade in DB, and cancels the opposite exit order (handles race conditions where both SL+TP fill)
+- **Real-Time DB Sync**: Trades are saved to the database immediately on entry (`save_trade_to_db`) and updated on every partial exit, SL change, or position close (`update_trade_in_db`)
 
 ---
 
-## 9. Frontend Dashboard
+## 10. Frontend Dashboard
 
 The React frontend provides 6 pages with auto-refreshing data:
 
@@ -549,7 +687,7 @@ The React frontend provides 6 pages with auto-refreshing data:
 
 ---
 
-## 10. Backend API
+## 11. Backend API
 
 The Flask backend (`backend/app.py`, 1800+ lines) exposes 25+ endpoints:
 
@@ -612,6 +750,7 @@ The Flask backend (`backend/app.py`, 1800+ lines) exposes 25+ endpoints:
 - **Dynamic ATR Buffer**: Calculates ATR-based buffer for market data endpoints (matches bot logic)
 - **Default User Mode**: Single-user setup with auto-created default account
 - **Watchlist Batching**: Single Kite API call for all symbols with 5s TTL cache
+- **Auto-Login on Startup**: Token validation and auto-refresh when fetching default user
 
 ### Database Models
 
@@ -622,7 +761,8 @@ User ──┬── Trade (one-to-many)
        └── BotLog (via user_id)
 
 User: email, password, capital/leverage config, Kite credentials, bot_active
-Trade: symbol, side, entry/exit price, quantity, SL/TP prices, pnl, status, order IDs, notes
+Trade: symbol, side, entry/exit price, quantity, SL/TP prices, pnl, status,
+       order IDs (entry, exit, stoploss), notes (with TARGET_ORDER_ID tracking)
 DailyStats: date, total/winning/losing trades, win_rate, total_pnl, largest win/loss
 Session: session_token, created/expires timestamps, is_active
 BotLog: log_type, message, log_level, timestamp, trade_id (optional)
@@ -630,21 +770,21 @@ BotLog: log_type, message, log_level, timestamp, trade_id (optional)
 
 ---
 
-## 11. Backtesting Framework
+## 12. Backtesting Framework
 
 The project includes a complete backtesting suite that validates the strategy on historical data.
 
-### 11.1 Data Pipeline
+### 12.1 Data Pipeline
 
 ```bash
 python backtest/download_data.py
 ```
 
-Downloads 5-minute and 15-minute intraday candles from Kite Connect API for the **top 10 NIFTY 50 stocks** covering the last 3 months. Data is saved as JSON files in `backtest/data/`.
+Downloads 5-minute and 15-minute intraday candles from Kite Connect API for **all 50 NIFTY stocks** plus NIFTY 50 index and NIFTYBEES. Data is saved as JSON files in `backtest/data/`.
 
-**Stocks downloaded**: HDFCBANK, RELIANCE, ICICIBANK, SBIN, TATASTEEL, INFY, TCS, AXISBANK, BAJFINANCE, ITC + NIFTY50 index
+**Current coverage**: 50 stocks × 2 intervals + NIFTY50 + NIFTYBEES = **104 data files**, covering Jun 2024 → Mar 2026.
 
-### 11.2 Backtester (`run_backtest.py`)
+### 12.2 Backtester (`run_backtest.py`)
 
 Simulates the **exact trading algorithm** from `bot_kite.py` on historical data:
 
@@ -665,13 +805,13 @@ Simulates the **exact trading algorithm** from `bot_kite.py` on historical data:
 - `trades.csv` — All individual trades
 - `equity_curve.csv` — Daily equity progression
 
-### 11.3 Parameter Optimizer (`optimize_params.py`)
+### 12.3 Parameter Optimizer (`optimize_params.py`)
 
 Runs a **grid search** across 11 parameter dimensions to find optimal configuration:
 
 | Parameter | Values Tested |
 |-----------|--------------|
-| Symbol selection | All 10, Top 8, Top 6, Top 5, Top 3 |
+| Symbol selection | All 50, Top 8, Top 6, Top 5, Top 3 |
 | SL distance factor | 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 1.0 |
 | Entry window cutoff | 9:45, 10:00, 10:15, 10:30, 10:45, 11:00 |
 | Max positions | 1, 2, 3, 5, 8, 10 |
@@ -687,7 +827,7 @@ Runs a **grid search** across 11 parameter dimensions to find optimal configurat
 
 Each combination reports: PnL (₹ + %), trade count, win rate, profit factor, max drawdown, avg win/loss.
 
-### 11.4 Results Analyzer (`analyze_results.py`)
+### 12.4 Results Analyzer (`analyze_results.py`)
 
 Deep diagnostic analysis of backtest trades:
 - **Trade outcome breakdown**: Pure SL, Partial + SL, Full winners
@@ -698,7 +838,25 @@ Deep diagnostic analysis of backtest trades:
 - **Monthly breakdown**: P&L by month
 - **Per-symbol performance**: Individual stock analysis
 
-### 11.5 Key Backtest Results
+### 12.5 ORB Readiness Scanner (`orb_readiness_scanner.py`)
+
+A reusable scoring engine (573 lines) that analyzes a stock's recent ORB readiness using 8 metrics:
+1. Recent Volatility (ATR% of price)
+2. Volume Trend (rising vs falling)
+3. Clean Breakout Ratio (how often ORB triggers cleanly)
+4. Gap Behavior (moderate gaps = ideal for ORB)
+5. Trend Clarity (directional stocks give better signals)
+6. Recent ORB Win Rate (simulated performance)
+7. Average R-Multiple (how far winners run)
+8. Range Quality (opening range size)
+
+Used by `pre_session_scanner.py` (for local file mode) and can be run standalone.
+
+### 12.6 Stock Ranker (`scan_all_stocks.py`)
+
+Runs the full backtester on **every NIFTY 50 stock individually** and produces a ranking table by P&L. This is what generated the `FOCUS_SYMBOLS` and `EXCLUDED_SYMBOLS` lists in `config.py`.
+
+### 12.7 Key Backtest Results
 
 The optimized parameters currently in `config.py` were derived from backtesting:
 
@@ -711,22 +869,36 @@ The optimized parameters currently in `config.py` were derived from backtesting:
 | **Volume Multiplier** | 1.0× (down from 1.2× — more quality signals) |
 | **ATR Buffer** | 0.15 × ATR(10) (lower catches more valid breakouts) |
 | **Max Positions** | 2 (down from 5 — concentrates capital better) |
-| **Focus Symbols** | Top 6 NIFTY stocks: INFY, RELIANCE, TCS, HDFCBANK, BAJFINANCE, SBIN |
+| **Focus Symbols** | Top 11 NIFTY stocks (auto-selected daily or fallback list) |
+| **Portfolio Backtest** | +₹16,007 (+20.01%), 52.2% WR, PF 1.54, MaxDD 1.71% |
 
 ---
 
-## 12. Configuration Reference
+## 13. Configuration Reference
 
-All configurable parameters live in `app_files/config.py` (360 lines). Here are the key categories:
+All configurable parameters live in `app_files/config.py` (406 lines). Here are the key categories:
 
 ### Capital & Leverage
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `STARTING_CAPITAL` | ₹20,000 | Base trading capital |
+| `DYNAMIC_CAPITAL` | `True` | Fetch live wallet balance each session (profits compound) |
+| `CAPITAL_UTILIZATION` | 85% | % of wallet balance to use when dynamic mode is on |
+| `STARTING_CAPITAL` | ₹20,000 | Fallback capital if Kite API unreachable |
 | `LEVERAGE` | 5x | MIS intraday leverage |
-| `HARDSTOP_CAPITAL` | ₹20,000 | Absolute maximum capital |
-| `HARDSTOP_UTILIZATION` | 80% | % of hardstop to actually use (→ ₹16,000 base, ₹80,000 effective) |
+| `USE_LEVERAGE_IN_SIZING` | `True` | Explicitly scale capital by leverage in qty calculation |
+| `USE_HARDSTOP_LIMIT` | `False` | Enable fixed capital ceiling (only when dynamic=off) |
+| `HARDSTOP_CAPITAL` | ₹20,000 | Maximum base capital (only if hardstop enabled) |
+| `HARDSTOP_UTILIZATION` | 80% | % of hardstop to use (→ ₹16,000 base, ₹80,000 effective) |
 | `MARGIN_UTILIZATION` | 85% | % of available margin per trade |
+
+### Auto-Scan (Pre-Session Scanner)
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `AUTO_SCAN_SYMBOLS` | `True` | Auto-pick best ORB stocks before each session |
+| `AUTO_SCAN_TOP_N` | 10 | Number of stocks to pick from scan |
+| `AUTO_SCAN_MIN_SCORE` | 40.0 | Minimum composite score (0-100) |
+| `AUTO_SCAN_MAX_PER_SECTOR` | 2 | Max stocks per sector (diversification) |
+| `AUTO_SCAN_USE_API` | `True` | Use live Kite API data (vs local files) |
 
 ### Multi-Stock Mode
 | Parameter | Default | Description |
@@ -737,8 +909,8 @@ All configurable parameters live in `app_files/config.py` (360 lines). Here are 
 | `MIN_ALLOCATION_PCT` | 10% | Min capital per stock |
 | `MAX_ALLOCATION_PCT` | 40% | Max capital per stock |
 | `MIN_CONFIDENCE_SCORE` | 0.40 | Min score to trade |
-| `FOCUS_SYMBOLS` | 6 stocks | INFY, RELIANCE, TCS, HDFCBANK, BAJFINANCE, SBIN |
-| `EXCLUDED_SYMBOLS` | 4 stocks | ITC, TATASTEEL, AXISBANK, ICICIBANK |
+| `FOCUS_SYMBOLS` | 11 stocks | Fallback: INDUSINDBK, TCS, INFY, NESTLEIND, SBILIFE, etc. |
+| `EXCLUDED_SYMBOLS` | 11 stocks | ICICIBANK, BRITANNIA, DRREDDY, BAJAJFINSV, etc. |
 
 ### Entry Filters
 | Parameter | Default | Description |
@@ -760,7 +932,7 @@ All configurable parameters live in `app_files/config.py` (360 lines). Here are 
 | `PRIMARY_ENTRY_END` | 10:30 | Primary window closes (optimized from 10:15) |
 | `SOFT_CUTOFF_START` | 10:15 | Soft cutoff starts (needs 2x volume) |
 | `SOFT_CUTOFF_END` | 10:30 | Soft cutoff ends |
-| `NO_ENTRY_AFTER` | 10:30 | Hard stop for new entries (optimized from 10:45) |
+| `NO_ENTRY_AFTER` | 10:30 | Hard stop for new entries |
 
 ### Exit Strategy (25/20/55 Split)
 | Parameter | Default | Description |
@@ -783,7 +955,7 @@ All configurable parameters live in `app_files/config.py` (360 lines). Here are 
 
 ---
 
-## 13. Setup & Installation
+## 14. Setup & Installation
 
 ### Prerequisites
 
@@ -853,7 +1025,7 @@ cd ..
 
 ---
 
-## 14. Environment Variables
+## 15. Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -870,7 +1042,7 @@ cd ..
 
 ---
 
-## 15. Running the Bot
+## 16. Running the Bot
 
 ### Development (manual start)
 
@@ -904,6 +1076,12 @@ python backtest/optimize_params.py
 
 # Analyze backtest results
 python backtest/analyze_results.py
+
+# Rank all NIFTY 50 stocks by ORB performance
+python backtest/scan_all_stocks.py
+
+# Run standalone ORB readiness scanner (uses local data)
+python -m app_files.pre_session_scanner
 ```
 
 ### Production
@@ -924,20 +1102,21 @@ curl -X POST http://localhost:5000/api/bot/start \
 4. → Creates KiteApp instance with validated credentials
 5. → Restores any existing positions from broker
 6. → Calls bot.run() (continuous daily loop)
-7.   → get_symbols_setup_data()     ← Fetches candles, calculates triggers
-8.   → run_multi_stock_trading()    ← Scans, scores, allocates, executes
-9.     → Signal scanning loop        ← 30-second polling
-10.    → calculate_signal_confidence() for each signal
-11.    → allocate_capital_to_signals()
-12.    → execute_multi_stock_entries()
-13.  → monitor_multi_stock_positions() ← 3-stage exits + ATR trailing
-14.  → generate_multi_stock_report()
-15.  → wait_until_next_day_market()  ← Reset state, wait for 9:15 AM
+7.   → [AUTO-SCAN] run_pre_session_scan()  ← Picks today's best stocks
+8.   → get_symbols_setup_data()           ← Fetches candles, calculates triggers
+9.   → run_multi_stock_trading()          ← Scans, scores, allocates, executes
+10.    → Signal scanning loop              ← 30-second polling
+11.    → calculate_signal_confidence() for each signal
+12.    → allocate_capital_to_signals()
+13.    → execute_multi_stock_entries()
+14.  → monitor_multi_stock_positions()    ← 3-stage exits + ATR trailing
+15.  → generate_multi_stock_report()
+16.  → wait_until_next_day_market()       ← Reset state, wait for 9:15 AM
 ```
 
 ---
 
-## 16. Deployment
+## 17. Deployment
 
 ### Recommended: AWS Lightsail (₹400–850/month)
 
@@ -996,6 +1175,7 @@ sudo systemctl status trading-bot
 ### Key Deployment Notes
 
 - The bot auto-logs in at market open (~9:15 AM IST) via the session manager
+- The pre-session scanner auto-picks stocks before each session starts trading
 - All MIS positions are auto-closed by 3:25 PM IST
 - The bot generates a daily report after market close
 - Trigger cache is persisted to file — survives bot restarts during the trading day
