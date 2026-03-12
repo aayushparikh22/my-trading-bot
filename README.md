@@ -17,14 +17,15 @@
 7. [Pre-Session Auto-Scanner](#7-pre-session-auto-scanner)
 8. [Auto-Login System](#8-auto-login-system)
 9. [Risk Management](#9-risk-management)
-10. [Frontend Dashboard](#10-frontend-dashboard)
-11. [Backend API](#11-backend-api)
-12. [Backtesting Framework](#12-backtesting-framework)
-13. [Configuration Reference](#13-configuration-reference)
-14. [Setup & Installation](#14-setup--installation)
-15. [Environment Variables](#15-environment-variables)
-16. [Running the Bot](#16-running-the-bot)
-17. [Deployment](#17-deployment)
+10. [Trade Journal](#10-trade-journal)
+11. [Frontend Dashboard](#11-frontend-dashboard)
+12. [Backend API](#12-backend-api)
+13. [Backtesting Framework](#13-backtesting-framework)
+14. [Configuration Reference](#14-configuration-reference)
+15. [Setup & Installation](#15-setup--installation)
+16. [Environment Variables](#16-environment-variables)
+17. [Running the Bot](#17-running-the-bot)
+18. [Deployment](#18-deployment)
 
 ---
 
@@ -115,6 +116,7 @@ Trading-bot/
 │   ├── kite_login.py           # Automated 5-step Kite login (TOTP 2FA)
 │   ├── kite_session.py         # Session manager with token persistence
 │   ├── pre_session_scanner.py  # Auto-picks best ORB stocks before each session (643 lines)
+│   ├── trade_journal.py        # JSONL trade logging (entry/partial exit/full exit/session summary)
 │   └── requirements.txt        # Python dependencies (bot)
 │
 ├── backend/                    # Flask REST API
@@ -162,6 +164,7 @@ Trading-bot/
 ├── .env                        # Credentials (gitignored)
 ├── .gitignore                  # Git ignore rules
 ├── access_token.txt            # Cached Kite token (auto-managed, gitignored)
+├── trade_journal.jsonl          # Persistent trade log (JSONL format, one record per event)
 ├── trigger_cache.json          # Opening range trigger persistence
 └── README.md
 ```
@@ -198,7 +201,7 @@ The bot implements an **Opening Range Breakout (ORB)** strategy enhanced with VW
 09:30 ──── Primary Entry Window Opens ──────────────────────────
   │
   │   PHASE 2: SIGNAL SCANNING (09:30 → 10:30)
-  │   • Poll 5-minute candles every 30 seconds
+  │   • Poll 5-minute candles every 30 seconds (optimized from 60s)
   │   • Check each symbol for breakout conditions
   │   • Apply all filters (Volume, NIFTY, Trend, Gap, Open Bias)
   │   • Calculate 7-factor confidence score
@@ -298,6 +301,9 @@ Breakout Detected (price > trigger + above VWAP)
     │
     └── ⑨ Liquidity Filter ──── Is daily volume > 500K shares?
                                   (Currently disabled to save API calls)
+
+    ⚡ Active positions are monitored for SL/exit during each scan cycle
+       to prevent positions from blowing past stop losses during entry scanning.
 ```
 
 ### 4.1 Gap Alignment Filter
@@ -332,9 +338,9 @@ open_position_in_range = (open - low) / (high - low)
 |-----------|------------|-------------|
 | LONG (open near low) | ✅ Confirmed | ❌ **SKIP** |
 | NEUTRAL | ⚠️ Allow | ⚠️ Allow |
-| SHORT (open near high) | ❌ **SKIP ALL** ⛔ | ❌ **SKIP ALL** ⛔ |
+| SHORT (open near high) | ❌ **SKIP** ⛔ | ⚠️ Allow |
 
-> **Backtest insight**: `SKIP_OPEN_BIAS_SHORT = True` — when the opening candle has a SHORT bias (open near high), ALL trades are skipped regardless of direction, as this pattern had only 28% win rate.
+> **Backtest insight**: `SKIP_OPEN_BIAS_SHORT = True` — when the opening candle has a SHORT bias (open near high), **BUY signals are skipped** since buying into bearish candle structure had only 28% win rate. SHORT signals are still allowed since the bias confirms the sell direction.
 
 ### 4.3 Symbol Focus (Backtest-Validated)
 
@@ -659,10 +665,40 @@ Split across MAX_POSITIONS = 2 (multi-stock mode)
 - **Quote Caching**: 5-second TTL quote cache, instrument cache (1 hour), batch quotes (up to 500 in one call)
 - **Trade Reconciliation**: Backend auto-detects when SL/TP orders fill on the exchange, closes trade in DB, and cancels the opposite exit order (handles race conditions where both SL+TP fill)
 - **Real-Time DB Sync**: Trades are saved to the database immediately on entry (`save_trade_to_db`) and updated on every partial exit, SL change, or position close (`update_trade_in_db`)
+- **Scan-Phase Position Monitoring**: Active positions are checked for SL hits and partial booking targets during each signal scan cycle (every 30 seconds), preventing stop losses from being missed while the bot is busy scanning for new entries
 
 ---
 
-## 10. Frontend Dashboard
+## 10. Trade Journal
+
+The bot maintains a persistent **JSONL trade journal** (`trade_journal.jsonl`) that logs every trading event in structured JSON format — one record per line. This provides a complete audit trail for analysis and debugging.
+
+### 10.1 Event Types
+
+| Event | When Logged | Key Fields |
+|-------|-------------|------------|
+| **ENTRY** | Trade is placed | Symbol, side, price, SL, quantity, confidence score + breakdown, volume ratio, breakout strength, allocation %, capital allocated, opening range data, NIFTY bias, entry window state, account balance, active position count |
+| **PARTIAL_EXIT** | Stage 1 or Stage 2 partial booking | Symbol, side, quantity exited, R-multiple reached, realized P&L, remaining quantity, whether SL moved to breakeven |
+| **FULL_EXIT** | Position fully closed (SL/target/EOD) | Symbol, side, exit price, exit reason, entry price, SL price, partial P&L, final exit P&L, total P&L, entry time, full position data |
+| **SESSION_SUMMARY** | End of trading day (~3:30 PM) | Date, symbols scanned, symbols traded, total P&L, account balance, positions entered/closed, per-position P&L breakdown |
+
+### 10.2 Usage
+
+```python
+# Read journal for analysis with pandas
+import pandas as pd
+journal = pd.read_json("trade_journal.jsonl", lines=True)
+
+# Filter entries
+entries = journal[journal["event"] == "ENTRY"]
+exits = journal[journal["event"] == "FULL_EXIT"]
+```
+
+Each record includes a full **config snapshot** (all strategy parameters at the moment of the event) for reproducibility. The journal file is append-only and survives bot restarts.
+
+---
+
+## 11. Frontend Dashboard
 
 The React frontend provides 6 pages with auto-refreshing data:
 
@@ -687,7 +723,7 @@ The React frontend provides 6 pages with auto-refreshing data:
 
 ---
 
-## 11. Backend API
+## 12. Backend API
 
 The Flask backend (`backend/app.py`, 1800+ lines) exposes 25+ endpoints:
 
@@ -770,11 +806,11 @@ BotLog: log_type, message, log_level, timestamp, trade_id (optional)
 
 ---
 
-## 12. Backtesting Framework
+## 13. Backtesting Framework
 
 The project includes a complete backtesting suite that validates the strategy on historical data.
 
-### 12.1 Data Pipeline
+### 13.1 Data Pipeline
 
 ```bash
 python backtest/download_data.py
@@ -784,7 +820,7 @@ Downloads 5-minute and 15-minute intraday candles from Kite Connect API for **al
 
 **Current coverage**: 50 stocks × 2 intervals + NIFTY50 + NIFTYBEES = **104 data files**, covering Jun 2024 → Mar 2026.
 
-### 12.2 Backtester (`run_backtest.py`)
+### 13.2 Backtester (`run_backtest.py`)
 
 Simulates the **exact trading algorithm** from `bot_kite.py` on historical data:
 
@@ -805,7 +841,7 @@ Simulates the **exact trading algorithm** from `bot_kite.py` on historical data:
 - `trades.csv` — All individual trades
 - `equity_curve.csv` — Daily equity progression
 
-### 12.3 Parameter Optimizer (`optimize_params.py`)
+### 13.3 Parameter Optimizer (`optimize_params.py`)
 
 Runs a **grid search** across 11 parameter dimensions to find optimal configuration:
 
@@ -827,7 +863,7 @@ Runs a **grid search** across 11 parameter dimensions to find optimal configurat
 
 Each combination reports: PnL (₹ + %), trade count, win rate, profit factor, max drawdown, avg win/loss.
 
-### 12.4 Results Analyzer (`analyze_results.py`)
+### 13.4 Results Analyzer (`analyze_results.py`)
 
 Deep diagnostic analysis of backtest trades:
 - **Trade outcome breakdown**: Pure SL, Partial + SL, Full winners
@@ -838,7 +874,7 @@ Deep diagnostic analysis of backtest trades:
 - **Monthly breakdown**: P&L by month
 - **Per-symbol performance**: Individual stock analysis
 
-### 12.5 ORB Readiness Scanner (`orb_readiness_scanner.py`)
+### 13.5 ORB Readiness Scanner (`orb_readiness_scanner.py`)
 
 A reusable scoring engine (573 lines) that analyzes a stock's recent ORB readiness using 8 metrics:
 1. Recent Volatility (ATR% of price)
@@ -852,11 +888,11 @@ A reusable scoring engine (573 lines) that analyzes a stock's recent ORB readine
 
 Used by `pre_session_scanner.py` (for local file mode) and can be run standalone.
 
-### 12.6 Stock Ranker (`scan_all_stocks.py`)
+### 13.6 Stock Ranker (`scan_all_stocks.py`)
 
 Runs the full backtester on **every NIFTY 50 stock individually** and produces a ranking table by P&L. This is what generated the `FOCUS_SYMBOLS` and `EXCLUDED_SYMBOLS` lists in `config.py`.
 
-### 12.7 Key Backtest Results
+### 13.7 Key Backtest Results
 
 The optimized parameters currently in `config.py` were derived from backtesting:
 
@@ -874,7 +910,7 @@ The optimized parameters currently in `config.py` were derived from backtesting:
 
 ---
 
-## 13. Configuration Reference
+## 14. Configuration Reference
 
 All configurable parameters live in `app_files/config.py` (406 lines). Here are the key categories:
 
@@ -955,7 +991,7 @@ All configurable parameters live in `app_files/config.py` (406 lines). Here are 
 
 ---
 
-## 14. Setup & Installation
+## 15. Setup & Installation
 
 ### Prerequisites
 
@@ -1025,7 +1061,7 @@ cd ..
 
 ---
 
-## 15. Environment Variables
+## 16. Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -1042,7 +1078,7 @@ cd ..
 
 ---
 
-## 16. Running the Bot
+## 17. Running the Bot
 
 ### Development (manual start)
 
@@ -1116,7 +1152,7 @@ curl -X POST http://localhost:5000/api/bot/start \
 
 ---
 
-## 17. Deployment
+## 18. Deployment
 
 ### Recommended: AWS Lightsail (₹400–850/month)
 
