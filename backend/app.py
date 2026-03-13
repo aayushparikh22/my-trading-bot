@@ -1823,6 +1823,137 @@ def create_log(user_id, log_type, message, log_level='INFO', trade_id=None):
 BotLog.create_log = staticmethod(create_log)
 
 
+# ===== Journal → DB Sync =====
+
+JOURNAL_PATH = os.path.join(os.path.dirname(__file__), '..', 'trade_journal.jsonl')
+
+def sync_journal_to_db():
+    """Read trade_journal.jsonl and insert any trades missing from the DB.
+
+    Matches on (user_id, symbol, trade_date, entry_price) to avoid duplicates.
+    Handles multiple trades per symbol per day by using entry_price as part of the key.
+    """
+    if not os.path.exists(JOURNAL_PATH):
+        print("  No trade_journal.jsonl found — skipping sync")
+        return
+
+    user = get_default_user()
+
+    # Parse journal: collect ENTRY records and match FULL_EXIT by (date, symbol, entry_price)
+    entries = []
+    exits = {}   # (date, symbol, entry_price) -> FULL_EXIT record
+
+    try:
+        with open(JOURNAL_PATH, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                event = rec.get('event')
+                date_str = rec.get('date')
+                symbol = rec.get('symbol')
+                if not date_str or not symbol:
+                    continue
+
+                if event == 'ENTRY':
+                    entries.append(rec)
+                elif event == 'FULL_EXIT':
+                    ep = float(rec.get('entry_price', 0))
+                    exits[(date_str, symbol, ep)] = rec
+    except Exception as e:
+        print(f"  [WARN] Failed to read journal: {e}")
+        return
+
+    synced = 0
+    for entry_rec in entries:
+        date_str = entry_rec.get('date')
+        symbol = entry_rec.get('symbol')
+        entry_price = float(entry_rec.get('entry_price', 0))
+        if entry_price == 0:
+            continue
+
+        try:
+            trade_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        except ValueError:
+            continue
+
+        # Check if this trade already exists in DB
+        existing = Trade.query.filter(
+            Trade.user_id == user.id,
+            Trade.symbol == symbol,
+            Trade.trade_date == trade_date,
+            Trade.entry_price == entry_price,
+        ).first()
+
+        exit_rec = exits.get((date_str, symbol, entry_price))
+
+        if existing:
+            # If there's an exit in the journal but DB trade is still OPEN, update it
+            if exit_rec and existing.status == 'OPEN':
+                existing.exit_price = float(exit_rec.get('exit_price', 0))
+                existing.pnl = float(exit_rec.get('total_pnl', 0))
+                existing.status = 'CLOSED'
+                exit_ts = exit_rec.get('timestamp')
+                if exit_ts:
+                    try:
+                        existing.exit_time = datetime.strptime(exit_ts, '%Y-%m-%d %H:%M:%S')
+                    except ValueError:
+                        pass
+                synced += 1
+            continue
+
+        # Build new Trade record
+        side = 'B' if entry_rec.get('side') == 'BUY' else 'S'
+        quantity = int(entry_rec.get('quantity', 0))
+        sl_price = float(entry_rec.get('sl_price', 0))
+        target_price = float(entry_rec.get('target_price', 0))
+
+        entry_ts = entry_rec.get('timestamp', '')
+        try:
+            entry_time = datetime.strptime(entry_ts, '%Y-%m-%d %H:%M:%S')
+        except ValueError:
+            entry_time = datetime.combine(trade_date, datetime.min.time())
+
+        trade = Trade(
+            user_id=user.id,
+            trade_date=trade_date,
+            entry_time=entry_time,
+            side=side,
+            symbol=symbol,
+            quantity=quantity,
+            entry_price=entry_price,
+            stoploss_price=sl_price,
+            target_price=target_price,
+            status='OPEN',
+        )
+
+        # Apply exit data if available
+        if exit_rec:
+            trade.exit_price = float(exit_rec.get('exit_price', 0))
+            trade.pnl = float(exit_rec.get('total_pnl', 0))
+            trade.status = 'CLOSED'
+            exit_ts = exit_rec.get('timestamp')
+            if exit_ts:
+                try:
+                    trade.exit_time = datetime.strptime(exit_ts, '%Y-%m-%d %H:%M:%S')
+                except ValueError:
+                    pass
+
+        db.session.add(trade)
+        synced += 1
+
+    if synced > 0:
+        db.session.commit()
+        print(f"  ✓ Synced {synced} trades from journal to database")
+    else:
+        print("  Journal sync: database already up to date")
+
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
@@ -1838,6 +1969,12 @@ if __name__ == '__main__':
         print("  Loading trigger cache...")
         print("="*50)
         load_trigger_cache_from_file()
+        
+        # Sync trade journal to database for persistent stats
+        print("\n" + "="*50)
+        print("  Syncing trade journal to database...")
+        print("="*50)
+        sync_journal_to_db()
         
         print("\n" + "="*50)
         print("  TRADING BOT BACKEND API - RUNNING")

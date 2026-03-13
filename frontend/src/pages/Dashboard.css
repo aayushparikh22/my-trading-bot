@@ -1,6 +1,6 @@
 .dashboard-container {
   min-height: 100vh;
-  background-color: #f5f7fa;
+  background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%);
   padding: 20px;
 }
 
@@ -10,7 +10,7 @@
   align-items: center;
   min-height: 100vh;
   font-size: 18px;
-  color: #666;
+  color: #a0a0a0;
 }
 
 /* Toast Notifications */
@@ -56,25 +56,26 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: white;
+  background: #1a2332;
   padding: 20px;
   border-radius: 10px;
   margin-bottom: 30px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
   margin-left: auto;
   margin-right: auto;
   max-width: 1400px;
+  border: 1px solid #2a3f5f;
 }
 
 .header-left h1 {
   font-size: 28px;
-  color: #333;
+  color: #fff;
   margin: 0;
   margin-bottom: 5px;
 }
 
 .header-subtitle {
-  color: #666;
+  color: #a0a0a0;
   font-size: 14px;
   margin: 0;
 }
@@ -179,15 +180,16 @@
 }
 
 .status-card {
-  background: white;
+  background: #1a2332;
   border-radius: 10px;
   padding: 20px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  border: 1px solid #2a3f5f;
 }
 
 .status-card h3 {
   margin: 0 0 15px 0;
-  color: #333;
+  color: #fff;
   font-size: 16px;
 }
 
@@ -202,7 +204,7 @@
   justify-content: space-between;
   align-items: center;
   padding: 10px 0;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid #2a3f5f;
 }
 
 .status-item:last-child {
@@ -210,13 +212,13 @@
 }
 
 .status-item label {
-  color: #666;
+  color: #a0a0a0;
   font-size: 13px;
   font-weight: 500;
 }
 
 .status-value {
-  color: #333;
+  color: #e5e7eb;
   font-size: 16px;
   font-weight: 600;
 }
@@ -239,13 +241,13 @@
 }
 
 .status-badge.running {
-  background-color: #d1fae5;
-  color: #065f46;
+  background-color: rgba(16, 185, 129, 0.2);
+  color: #34d399;
 }
 
 .status-badge.stopped {
-  background-color: #fee2e2;
-  color: #7f1d1d;
+  background-color: rgba(239, 68, 68, 0.2);
+  color: #f87171;
 }
 
 /* Charts Section */
@@ -260,15 +262,16 @@
 }
 
 .chart-container {
-  background: white;
+  background: #1a2332;
   border-radius: 10px;
   padding: 20px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
+  border: 1px solid #2a3f5f;
 }
 
 .chart-container h3 {
   margin: 0 0 20px 0;
-  color: #333;
+  color: #fff;
   font-size: 16px;
 }
 
@@ -278,25 +281,26 @@
 
 .no-data {
   text-align: center;
-  color: #999;
+  color: #666;
   padding: 40px 20px;
   font-size: 14px;
 }
 
 /* Live Status */
 .live-status {
-  background: white;
+  background: #1a2332;
   border-radius: 10px;
   padding: 20px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4);
   margin-left: auto;
   margin-right: auto;
   max-width: 1400px;
+  border: 1px solid #2a3f5f;
 }
 
 .live-status h3 {
   margin: 0 0 20px 0;
-  color: #333;
+  color: #fff;
   font-size: 16px;
 }
 
@@ -311,7 +315,7 @@
   border-bottom: none;
   align-items: flex-start;
   padding: 15px;
-  background-color: #f9fafb;
+  background-color: #0f1319;
   border-radius: 5px;
 }
 
@@ -334,13 +338,14 @@
 }
 
 .modal-content {
-  background: white;
+  background: #1a2332;
   border-radius: 10px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
   max-width: 500px;
   width: 90%;
   max-height: 90vh;
   overflow-y: auto;
+  border: 1px solid #2a3f5f;
 }
 
 .modal-header {
@@ -348,13 +353,13 @@
   justify-content: space-between;
   align-items: center;
   padding: 20px;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid #2a3f5f;
 }
 
 .modal-header h2 {
   margin: 0;
   font-size: 20px;
-  color: #333;
+  color: #fff;
 }
 
 .modal-close {
@@ -362,7 +367,7 @@
   border: none;
   font-size: 28px;
   cursor: pointer;
-  color: #666;
+  color: #a0a0a0;
   padding: 0;
   width: 30px;
   height: 30px;
@@ -372,7 +377,7 @@
 }
 
 .modal-close:hover {
-  color: #333;
+  color: #fff;
 }
 
 .modal-body {
@@ -387,31 +392,33 @@
   display: block;
   margin-bottom: 6px;
   font-weight: 500;
-  color: #333;
+  color: #e5e7eb;
   font-size: 14px;
 }
 
 .form-group input {
   width: 100%;
   padding: 10px;
-  border: 1px solid #d1d5db;
+  border: 1px solid #2a3f5f;
   border-radius: 5px;
   font-size: 14px;
   font-family: inherit;
   box-sizing: border-box;
+  background-color: #0f1319;
+  color: #e5e7eb;
 }
 
 .form-group input:focus {
   outline: none;
   border-color: #667eea;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2);
 }
 
 .modal-footer {
   display: flex;
   gap: 10px;
   padding: 20px;
-  border-top: 1px solid #e5e7eb;
+  border-top: 1px solid #2a3f5f;
   justify-content: flex-end;
 }
 
@@ -427,12 +434,12 @@
 }
 
 .btn-cancel {
-  background-color: #f3f4f6;
-  color: #333;
+  background-color: #2a3f5f;
+  color: #e5e7eb;
 }
 
 .btn-cancel:hover {
-  background-color: #e5e7eb;
+  background-color: #3a4f6f;
 }
 
 .btn-save {
@@ -469,7 +476,7 @@
 
 /* Settings Modal additions */
 .form-note {
-  background: #f0f4f8;
+  background: #0f1319;
   padding: 12px;
   border-radius: 4px;
   margin-top: 16px;
@@ -479,7 +486,7 @@
 .form-note p {
   margin: 0 0 8px 0;
   font-size: 12px;
-  color: #555;
+  color: #a0a0a0;
   font-weight: 600;
 }
 
@@ -487,7 +494,7 @@
   margin: 0;
   padding-left: 20px;
   font-size: 12px;
-  color: #666;
+  color: #888;
 }
 
 .form-note a {

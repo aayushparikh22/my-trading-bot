@@ -363,21 +363,23 @@ const Dashboard = () => {
           {weeklyStats?.daily_stats && weeklyStats.daily_stats.length > 0 ? (
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={weeklyStats.daily_stats}>
-                <CartesianGrid strokeDasharray="3 3" />
+                <CartesianGrid strokeDasharray="3 3" stroke="#2a3f5f" />
                 <XAxis
                   dataKey="stats_date"
-                  tick={{ fontSize: 12 }}
+                  tick={{ fontSize: 12, fill: '#a0a0a0' }}
                   tickFormatter={(date) => {
                     const d = new Date(date);
                     return `${d.getMonth() + 1}/${d.getDate()}`;
                   }}
+                  stroke="#2a3f5f"
                 />
-                <YAxis />
+                <YAxis tick={{ fill: '#a0a0a0' }} stroke="#2a3f5f" />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#f9fafb', border: '1px solid #e5e7eb' }}
+                  contentStyle={{ backgroundColor: '#1a2332', border: '1px solid #2a3f5f', color: '#e5e7eb' }}
+                  labelStyle={{ color: '#a0a0a0' }}
                   formatter={(value) => `₹${value.toFixed(2)}`}
                 />
-                <Legend />
+                <Legend wrapperStyle={{ color: '#a0a0a0' }} />
                 <Bar dataKey="total_pnl" fill="#667eea" name="Daily P&L" />
               </BarChart>
             </ResponsiveContainer>
@@ -424,21 +426,23 @@ const Dashboard = () => {
           {weeklyStats?.daily_stats && weeklyStats.daily_stats.length > 0 ? (
             <ResponsiveContainer width="100%" height={300}>
               <LineChart data={calculateCumulativePnL(weeklyStats.daily_stats)}>
-                <CartesianGrid strokeDasharray="3 3" />
+                <CartesianGrid strokeDasharray="3 3" stroke="#2a3f5f" />
                 <XAxis
                   dataKey="stats_date"
-                  tick={{ fontSize: 12 }}
+                  tick={{ fontSize: 12, fill: '#a0a0a0' }}
                   tickFormatter={(date) => {
                     const d = new Date(date);
                     return `${d.getMonth() + 1}/${d.getDate()}`;
                   }}
+                  stroke="#2a3f5f"
                 />
-                <YAxis />
+                <YAxis tick={{ fill: '#a0a0a0' }} stroke="#2a3f5f" />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#f9fafb', border: '1px solid #e5e7eb' }}
+                  contentStyle={{ backgroundColor: '#1a2332', border: '1px solid #2a3f5f', color: '#e5e7eb' }}
+                  labelStyle={{ color: '#a0a0a0' }}
                   formatter={(value) => `₹${value.toFixed(2)}`}
                 />
-                <Legend />
+                <Legend wrapperStyle={{ color: '#a0a0a0' }} />
                 <Line
                   type="monotone"
                   dataKey="cumulative_pnl"
