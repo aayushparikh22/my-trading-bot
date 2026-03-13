@@ -46,9 +46,10 @@ MARGIN_UTILIZATION = 0.85    # Use 85% of available capital as margin per trade
 # ===== MULTI-STOCK PORTFOLIO ALLOCATION =====
 # Enable trading multiple stocks simultaneously with confidence-based allocation
 MULTI_STOCK_MODE = True       # Enable multi-stock trading (False = single stock like before)
-MAX_POSITIONS = 2             # Maximum simultaneous positions (OPTIMIZED: was 5, 2 concentrates capital better)
+MAX_POSITIONS = 1             # Maximum simultaneous positions (OPTIMIZED: was 2, 1 concentrates capital best)
+                              # Set to 2 for 60/40 split mode; set to 1 for full capital on best signal
 MIN_ALLOCATION_PCT = 0.10     # Minimum 10% allocation per stock (prevents tiny positions)
-MAX_ALLOCATION_PCT = 0.40     # Maximum 40% allocation per stock (prevents over-concentration)
+MAX_ALLOCATION_PCT = 0.60     # Maximum 60% allocation per stock (OPTIMIZED: was 40%, allows concentration)
 MAX_STOCKS_TO_SCAN = 20       # Limit stocks to scan (reduces API calls) - top N from list
 
 # Confidence Scoring Weights (total should = 1.0)
@@ -62,7 +63,7 @@ CONFIDENCE_WEIGHT_GAP = 0.15         # Gap alignment (relative strength vs prev 
 CONFIDENCE_WEIGHT_OPEN_BIAS = 0.10   # Open position within candle range
 
 # Confidence Thresholds
-MIN_CONFIDENCE_SCORE = 0.40   # Minimum score to consider (0-1 scale, 0.4 = 40%)
+MIN_CONFIDENCE_SCORE = 0.55   # Minimum score to consider (0-1 scale, raised from 0.40 for quality filter)
 HIGH_CONFIDENCE_THRESHOLD = 0.70  # Score above this gets priority allocation
 
 # ===== AUTO-SCAN: DYNAMIC SYMBOL SELECTION =====
@@ -219,8 +220,17 @@ LIMIT_ORDER_TIMEOUT = 30       # Cancel and convert to market after 30 sec
 # 2. Dynamic Volatility Buffer (ATR)
 USE_DYNAMIC_ATR_BUFFER = True  # Use ATR-based buffer instead of fixed
 ATR_PERIOD = 10               # ATR lookback period (10 candles)
-ATR_MULTIPLIER = 0.15         # Buffer = 0.15 × ATR(10) (OPTIMIZED: lower buffer catches more valid breakouts)
+ATR_MULTIPLIER = 0.15         # Buffer = 0.15 × ATR(10) (DEFAULT for normal ranges)
 ATR_TIMEFRAME = "5minute"     # Calculate ATR on 5-min candles
+
+# Dynamic ATR Buffer by Volatility Regime
+# Tight opening range needs stronger conviction; wide range needs less
+USE_DYNAMIC_ATR_REGIME = True           # Enable volatility-regime-aware ATR buffer
+ATR_MULTIPLIER_TIGHT_RANGE = 0.30       # Tight range (0.1-0.5%): wider buffer, need stronger conviction
+ATR_MULTIPLIER_NORMAL_RANGE = 0.15      # Normal range (0.5-1.0%): standard buffer
+ATR_MULTIPLIER_WIDE_RANGE = 0.08        # Wide range (1.0%+): already volatile, smaller buffer is meaningful
+RANGE_TIGHT_THRESHOLD_PCT = 0.5         # Below this %: tight range
+RANGE_WIDE_THRESHOLD_PCT = 1.0          # Above this %: wide range
 
 # 2a. Opening Range Quality Filter
 USE_RANGE_FILTER = True        # Skip ranges that are too small/large
@@ -249,16 +259,15 @@ VOLUME_CLOSE_MULT = 0.9       # 14:30-15:30 pickup into close
 # ===== PHASE 2: STRATEGY LOGIC =====
 # 4. Extended & Adaptive Window
 PRIMARY_ENTRY_START = 930      # 9:30 AM (primary window opens)
-PRIMARY_ENTRY_END = 1030       # 10:30 AM (primary window closes) — OPTIMIZED: was 10:15
-SOFT_CUTOFF_START = 1015       # 10:15 AM (soft cutoff starts) — OPTIMIZED: was 10:00
-SOFT_CUTOFF_END = 1030         # 10:30 AM (soft cutoff ends) — OPTIMIZED: was 10:15
-NO_ENTRY_AFTER = 1030          # 10:30 AM (hard stop) — OPTIMIZED: was 10:15
-# Backtest insight: Window to 10:30 with SL=1.0 captures 254 quality trades, best profit zone
+PRIMARY_ENTRY_END = 950        # 9:50 AM (primary window closes) — OPTIMIZED: peak WR is 9:30-9:50
+SOFT_CUTOFF_START = 950        # 9:50 AM (soft cutoff starts) — requires 2.5x volume
+SOFT_CUTOFF_END = 1015         # 10:15 AM (soft cutoff ends) — only high-conviction entries
+NO_ENTRY_AFTER = 1015          # 10:15 AM (hard stop) — OPTIMIZED: was 10:30, late entries have 35-38% WR
+# Backtest insight: 9:30-9:50 has 52-55% WR; 10:15-10:30 has 35-38% WR
 
-# During soft cutoff (10:15-10:45): Take signal ONLY if:
-# - Volatility expanding (ATR > avg ATR) OR
-# - Volume 2x average
-SOFT_CUTOFF_VOL_MULTIPLIER = 2.0
+# During soft cutoff (9:50-10:15): Take signal ONLY if:
+# - Volume 2.5x average (strong conviction)
+SOFT_CUTOFF_VOL_MULTIPLIER = 2.5  # OPTIMIZED: was 2.0, higher bar for late entries
 
 # 5. Smart Multi-Trade Logic
 MAX_TRADES_PER_DAY = 999       # Unlimited trades per day
@@ -275,6 +284,17 @@ SHORT_REQUIRES_NIFTY_BELOW_VWAP = True  # Only allow SHORT if NIFTY < VWAP (hard
 # 6b. NIFTY Soft Bias Filter
 USE_NIFTY_SOFT_BIAS = True     # Soft filter instead of hard block
 NIFTY_STRONG_THRESHOLD_PCT = 0.25  # Strong bias threshold (percent)
+
+# 6c. NIFTY Regime-Adaptive Sizing
+# Adjust position size based on NIFTY market regime
+USE_NIFTY_REGIME_SIZING = True
+NIFTY_UPTREND_LONG_BOOST = 1.20   # +20% position size for LONGs when NIFTY uptrend
+NIFTY_UPTREND_SHORT_PENALTY = 0.0 # Block SHORTs in NIFTY uptrend (already handled by hard block)
+NIFTY_RANGING_SIZE_FACTOR = 0.60  # 60% position size when NIFTY is ranging/neutral
+NIFTY_DOWNTREND_LONG_PENALTY = 0.70  # 70% position size for LONGs when NIFTY downtrend
+NIFTY_DOWNTREND_SHORT_BOOST = 1.20   # +20% position size for SHORTs when NIFTY downtrend
+# Skip LONGs in soft cutoff when NIFTY is in downtrend
+NIFTY_DOWNTREND_SKIP_LONG_IN_SOFT = True
 
 # 6a. Higher Timeframe Trend Alignment
 USE_TREND_FILTER = True        # Require higher timeframe trend alignment
@@ -327,6 +347,20 @@ STOPLOSS_DISTANCE_FACTOR = 1.0           # SL at 100% of calculated risk distanc
 # Example: If Entry=100, normal SL=90 (risk=10)
 #          With this factor: SL=90 (full range, gives trades maximum room to develop)
 # Backtest insight: SL=1.0 was the single biggest improvement — +₹1,320 vs +₹339 at SL=0.75
+
+# BREATHING ROOM: Add extra buffer BEYOND the calculated SL
+# This gives trades room to develop through normal intraday pullbacks
+# 1.25 means SL is placed 25% further away than the raw calculation
+SL_BREATHING_ROOM_FACTOR = 1.25          # SL distance × 1.25 (25% extra room)
+# Example: Entry=100, raw SL=95 (risk=5) → breathing room SL=93.75 (risk=6.25)
+
+# PROGRESSIVE SL TIGHTENING (instead of sudden jump to breakeven)
+# After partial exits, move SL gradually instead of directly to entry
+USE_PROGRESSIVE_SL = True
+# At Stage 1 (first partial): Move SL to entry - 25% of original risk
+PROGRESSIVE_SL_STAGE1_FACTOR = 0.25     # Keep 25% of original risk below entry
+# At Stage 2 (second partial): Move SL to entry + 10% of original risk (true breakeven+)
+PROGRESSIVE_SL_STAGE2_FACTOR = -0.10    # Negative = ABOVE entry (profit locked)
 
 PARTIAL_BOOKING_TRAIL_FROM = 1.5        # Trail remaining from 1.5R level (was 3.0)
 

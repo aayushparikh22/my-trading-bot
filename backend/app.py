@@ -81,9 +81,6 @@ def reconcile_open_trades_for_user(current_user):
     if now - last_run < RECONCILE_DEBOUNCE_SECONDS:
         return
     _reconcile_last_run[current_user.id] = now
-    
-    if not current_user.kite_api_key or not current_user.kite_access_token:
-        return
 
     from app_files.kite_service import KiteService
 
@@ -330,12 +327,17 @@ def calculate_atr_buffer_for_symbol(kite, exchange, symbol):
         lookback_minutes = (period + 2) * minutes_per_candle
         start_time = now - timedelta(minutes=lookback_minutes)
         
+        # Find instrument token first
+        instrument_token = kite.find_instrument_token(exchange, symbol)
+        if not instrument_token:
+            return config.BUFFER_AMOUNT
+        
         # Fetch historical candles
         candles = kite.get_historical_data(
-            exchange, symbol,
+            instrument_token,
             start_time,
             now,
-            interval=timeframe
+            timeframe
         )
         
         if not candles or len(candles) < period + 1:
@@ -1554,12 +1556,13 @@ def get_live_market_data():
                 start_time = now.replace(hour=9, minute=15, second=0, microsecond=0)
                 end_time = now.replace(hour=9, minute=30, second=0, microsecond=0)
                 
+                instrument_token = kite.find_instrument_token(exchange, symbol)
                 candles = kite.get_historical_data(
-                    exchange, symbol,
+                    instrument_token,
                     start_time,
                     end_time,
-                    interval="15minute"
-                )
+                    "15minute"
+                ) if instrument_token else []
                 
                 if candles and len(candles) > 0:
                     # Use opening range high/low (LOCKED at 9:30 AM)

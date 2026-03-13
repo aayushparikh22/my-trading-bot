@@ -13,6 +13,7 @@ import pytz
 import logging
 from app_files import config
 from app_files.kite_service import KiteService
+from app_files import trade_journal
 
 # Setup logging FIRST before using logger
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
@@ -193,6 +194,7 @@ class KiteApp:
                     'remaining_quantity': qty,  # For monitoring compatibility
                     'entry_price': entry_price,
                     'sl_price': sl_price,
+                    'original_risk': abs(entry_price - sl_price),  # For progressive SL calculations
                     'exchange': exchange,
                     'token': pos.get('instrument_token'),
                     'restored': True,
@@ -897,7 +899,7 @@ class KiteApp:
 
                 # Define triggers using ATR-based buffer if enabled
                 if config.USE_DYNAMIC_ATR_BUFFER and token:
-                    buffer = self.calculate_atr_buffer(token)
+                    buffer = self.calculate_atr_buffer(token, range_high=h, range_low=l, vwap=vwap)
                 else:
                     buffer = config.BUFFER_AMOUNT
 
@@ -1197,6 +1199,13 @@ class KiteApp:
                             self.log_skip(f"{symbol}: Volume not 2x in SOFT window")
                             continue
                     
+                    # NIFTY Downtrend: skip LONGs in soft cutoff window
+                    if self.entry_window_state == "SOFT" and getattr(config, 'NIFTY_DOWNTREND_SKIP_LONG_IN_SOFT', False):
+                        if getattr(self, 'nifty_bias', 'NEUTRAL') == "SHORT":
+                            logger.info(f"   ⚠️  {symbol}: LONG in SOFT window + NIFTY downtrend → SKIP")
+                            self.log_skip(f"{symbol}: LONG in SOFT window + NIFTY downtrend")
+                            continue
+                    
                     # ENHANCEMENT 2: Gap alignment filter - skip if gap contradicts breakout
                     if getattr(config, 'USE_GAP_FILTER', False) and getattr(config, 'GAP_CONTRADICTION_SKIP', False):
                         gap_pct = data.get('gap_pct', 0)
@@ -1257,13 +1266,9 @@ class KiteApp:
                 
                 # Check for short signal
                 elif c_5 < short_trigger and c_5 < vwap:
-                    # SKIP_OPEN_BIAS_SHORT: Skip ALL trades when open_bias=SHORT (backtest: 28% WR, toxic)
-                    if getattr(config, 'SKIP_OPEN_BIAS_SHORT', False):
-                        open_bias = data.get('open_bias', 'NEUTRAL')
-                        if open_bias == "SHORT":
-                            logger.info(f"   ⚠️  {symbol}: Open bias SHORT — skipping ALL trades (SKIP_OPEN_BIAS_SHORT)")
-                            self.log_skip(f"{symbol}: Open bias SHORT — all trades skipped")
-                            continue
+                    # NOTE: SKIP_OPEN_BIAS_SHORT does NOT apply to SELL signals.
+                    # A SHORT open_bias (open near high, sold down) CONFIRMS a short breakout.
+                    # Only skip BUY signals when open_bias=SHORT (done above).
                     
                     # Apply soft cutoff restrictions
                     if self.entry_window_state == "SOFT":
@@ -1928,10 +1933,14 @@ class KiteApp:
     
     # PHASE 1: CRITICAL FIXES
     
-    def calculate_atr_buffer(self, instrument_token):
+    def calculate_atr_buffer(self, instrument_token, range_high=None, range_low=None, vwap=None):
         """
         CHANGE 2: Dynamic Volatility Buffer using ATR
         Replaces fixed buffer with adaptive buffer = ATR_MULTIPLIER × ATR
+        
+        With USE_DYNAMIC_ATR_REGIME: selects ATR multiplier based on opening range width.
+        Tight range → higher multiplier (need stronger conviction to avoid false breakouts)
+        Wide range → lower multiplier (breakout already strong, smaller buffer is meaningful)
         """
         try:
             atr_value = self.calculate_atr_value(instrument_token)
@@ -1939,8 +1948,28 @@ class KiteApp:
                 logger.warning("Not enough candles for ATR, using fallback buffer")
                 return config.BUFFER_AMOUNT
 
-            buffer = config.ATR_MULTIPLIER * atr_value
-            logger.info(f"   ATR({config.ATR_PERIOD}): ₹{atr_value:.2f} → Dynamic Buffer: ₹{buffer:.2f}")
+            # Dynamic ATR regime: select multiplier based on opening range width
+            multiplier = config.ATR_MULTIPLIER  # default
+            regime = "NORMAL"
+            if getattr(config, 'USE_DYNAMIC_ATR_REGIME', False) and range_high and range_low and vwap and vwap > 0:
+                range_pct = ((range_high - range_low) / vwap) * 100
+                tight_threshold = getattr(config, 'RANGE_TIGHT_THRESHOLD_PCT', 0.5)
+                wide_threshold = getattr(config, 'RANGE_WIDE_THRESHOLD_PCT', 1.0)
+                
+                if range_pct < tight_threshold:
+                    multiplier = getattr(config, 'ATR_MULTIPLIER_TIGHT_RANGE', 0.30)
+                    regime = "TIGHT"
+                elif range_pct > wide_threshold:
+                    multiplier = getattr(config, 'ATR_MULTIPLIER_WIDE_RANGE', 0.08)
+                    regime = "WIDE"
+                else:
+                    multiplier = getattr(config, 'ATR_MULTIPLIER_NORMAL_RANGE', 0.15)
+                    regime = "NORMAL"
+                
+                logger.info(f"   📏 Range: {range_pct:.2f}% → Regime: {regime} → ATR multiplier: {multiplier}")
+
+            buffer = multiplier * atr_value
+            logger.info(f"   ATR({config.ATR_PERIOD}): ₹{atr_value:.2f} → Dynamic Buffer: ₹{buffer:.2f} (regime={regime})")
             return buffer
             
         except Exception as e:
@@ -2037,6 +2066,12 @@ class KiteApp:
                     time_factor = config.VOLUME_CLOSE_MULT
 
             required_ratio = config.VOLUME_MULTIPLIER * time_factor
+            
+            # Apply SOFT_CUTOFF_VOL_MULTIPLIER when in soft window (higher bar for late entries)
+            if getattr(self, 'entry_window_state', 'PRIMARY') == 'SOFT':
+                soft_mult = getattr(config, 'SOFT_CUTOFF_VOL_MULTIPLIER', 2.0)
+                required_ratio = soft_mult * time_factor
+            
             volume_ratio = current_volume / avg_volume if avg_volume > 0 else 0
 
             if volume_ratio >= required_ratio:
@@ -2320,6 +2355,28 @@ class KiteApp:
             position_capital = available_capital * allocation_pct
             position_capital = min(position_capital, remaining_capital)
             
+            # NIFTY Regime-Adaptive Sizing: adjust position size based on market regime
+            if getattr(config, 'USE_NIFTY_REGIME_SIZING', False):
+                nifty_bias = getattr(self, 'nifty_bias', 'NEUTRAL')
+                signal_side = signal.get('entry_side', '')
+                regime_factor = 1.0
+                
+                if nifty_bias == "LONG":
+                    if signal_side == "BUY":
+                        regime_factor = getattr(config, 'NIFTY_UPTREND_LONG_BOOST', 1.20)
+                    # SHORTs in uptrend already blocked by is_nifty_bias_blocking
+                elif nifty_bias == "SHORT":
+                    if signal_side == "BUY":
+                        regime_factor = getattr(config, 'NIFTY_DOWNTREND_LONG_PENALTY', 0.70)
+                    elif signal_side == "SELL":
+                        regime_factor = getattr(config, 'NIFTY_DOWNTREND_SHORT_BOOST', 1.20)
+                elif nifty_bias == "NEUTRAL":
+                    regime_factor = getattr(config, 'NIFTY_RANGING_SIZE_FACTOR', 0.60)
+                
+                position_capital = position_capital * regime_factor
+                if regime_factor != 1.0:
+                    logger.info(f"   📊 {signal['symbol']}: NIFTY regime={nifty_bias}, side={signal_side} → size factor {regime_factor:.2f}")
+            
             if position_capital <= 0:
                 continue
             
@@ -2341,6 +2398,9 @@ class KiteApp:
                 'entry_side': signal['entry_side'],
                 'sl_price': signal['sl_price'],
                 'confidence': signal['confidence'],
+                'breakdown': signal.get('breakdown', {}),
+                'volume_ratio': signal.get('volume_ratio', 1.0),
+                'breakout_strength': signal.get('breakout_strength', 0),
                 'allocation_pct': allocation_pct,
                 'quantity': quantity,
                 'capital_allocated': actual_allocation
@@ -2391,12 +2451,14 @@ class KiteApp:
                 
                 if order:
                     # Track position
+                    original_risk = abs(limit_price - alloc['sl_price'])
                     self.active_positions[symbol] = {
                         'entry_price': limit_price,
                         'quantity': alloc['quantity'],
                         'remaining_quantity': alloc['quantity'],
                         'side': alloc['entry_side'],
                         'sl_price': alloc['sl_price'],
+                        'original_risk': original_risk,
                         'confidence': alloc['confidence'],
                         'capital_allocated': alloc['capital_allocated'],
                         'entry_time': get_ist_time(),
@@ -2412,6 +2474,29 @@ class KiteApp:
                     successful_entries += 1
                     self.num_trades_today += 1
                     logger.info(f"   ✅ Entry successful for {symbol}")
+
+                    # ── Trade Journal: log ENTRY ──
+                    try:
+                        trade_journal.log_entry(
+                            symbol=symbol,
+                            entry_side=alloc['entry_side'],
+                            entry_price=limit_price,
+                            sl_price=alloc['sl_price'],
+                            quantity=alloc['quantity'],
+                            confidence=alloc['confidence'],
+                            confidence_breakdown=alloc.get('breakdown', {}),
+                            volume_ratio=alloc.get('volume_ratio', 1.0),
+                            breakout_strength=alloc.get('breakout_strength', 0),
+                            allocation_pct=alloc.get('allocation_pct', 0),
+                            capital_allocated=alloc['capital_allocated'],
+                            symbol_data=alloc['data'],
+                            nifty_bias=self.nifty_bias,
+                            entry_window_state=self.entry_window_state,
+                            account_balance=self.account_balance,
+                            active_positions_count=len(self.active_positions),
+                        )
+                    except Exception as je:
+                        logger.warning(f"Trade journal entry log failed: {je}")
                 else:
                     logger.error(f"   ❌ Entry failed for {symbol}")
                     
@@ -2638,9 +2723,12 @@ class KiteApp:
         logger.info("=" * 60 + "\n")
         self.log_to_db("🚀 MULTI-STOCK PORTFOLIO MODE - Scanning all symbols...")
         
+        # Store scanned symbols for session summary
+        self._last_symbols_data_keys = list(symbols_data.keys())
+        
         pending_retests = {}
         last_scan_time = get_ist_time()
-        scan_interval = 60  # Scan every 60 seconds (was 30) to avoid API rate limits
+        scan_interval = 30  # Scan every 30 seconds for faster breakout detection
         
         while not self.should_stop:
             now = get_ist_time()
@@ -2672,6 +2760,10 @@ class KiteApp:
                 logger.info("🛑 Stop requested")
                 return False
             
+            # ===== MONITOR EXISTING POSITIONS FOR SL/EXIT DURING SCAN PHASE =====
+            if self.active_positions:
+                self._check_positions_during_scan(now)
+            
             # Scan interval check
             if (now - last_scan_time).seconds < scan_interval:
                 time.sleep(5)
@@ -2679,10 +2771,114 @@ class KiteApp:
             
             last_scan_time = now
             
+            # Refresh NIFTY bias each scan cycle (market conditions change)
+            self.nifty_bias = self.check_nifty_trend()
+            
             # ===== PHASE 1: COLLECT ALL VALID SIGNALS =====
             valid_signals = []
             
             logger.info(f"\n🔍 SCANNING {len(symbols_data)} symbols... ({now.strftime('%H:%M:%S')})")
+            
+            # ===== RETEST CONFIRMATION CHECK =====
+            # Check pending retests BEFORE scanning for new breakouts
+            if getattr(config, 'USE_RETEST_ENTRY', False):
+                retests_to_remove = []
+                for rt_symbol, rt_state in pending_retests.items():
+                    if rt_symbol in self.active_positions:
+                        retests_to_remove.append(rt_symbol)
+                        continue
+                    if rt_symbol not in symbols_data:
+                        retests_to_remove.append(rt_symbol)
+                        continue
+                    
+                    rt_data = symbols_data[rt_symbol]
+                    rt_token = rt_data["token"]
+                    rt_vwap = rt_data["vwap"]
+                    
+                    rt_candle = self.get_latest_5min_candle(rt_token)
+                    if not rt_candle:
+                        continue
+                    rt_o, rt_h5, rt_l5, rt_c5, rt_v, rt_candle_time = rt_candle
+                    
+                    # Skip if same candle as last check
+                    if rt_candle_time == rt_state.get("last_candle_time"):
+                        continue
+                    rt_state["last_candle_time"] = rt_candle_time
+                    rt_state["candles_waited"] += 1
+                    
+                    # Timeout
+                    if rt_state["candles_waited"] > config.RETEST_MAX_CANDLES:
+                        logger.info(f"   ⏳ {rt_symbol}: Retest timeout ({config.RETEST_MAX_CANDLES} candles) - no entry")
+                        retests_to_remove.append(rt_symbol)
+                        continue
+                    
+                    # Check retest zone
+                    zone_pct = config.RETEST_ZONE_PCT / 100
+                    zone_low = rt_state["trigger"] * (1 - zone_pct)
+                    zone_high = rt_state["trigger"] * (1 + zone_pct)
+                    
+                    if rt_state["side"] == "BUY":
+                        retest_ok = rt_l5 <= zone_high and rt_h5 >= zone_low and rt_c5 > rt_state["trigger"] and rt_c5 > rt_vwap
+                    else:
+                        retest_ok = rt_h5 >= zone_low and rt_l5 <= zone_high and rt_c5 < rt_state["trigger"] and rt_c5 < rt_vwap
+                    
+                    if not retest_ok:
+                        logger.info(f"   🧪 {rt_symbol}: Retest candle {rt_state['candles_waited']}/{config.RETEST_MAX_CANDLES} - not confirmed yet")
+                        continue
+                    
+                    # Retest confirmed! Re-check filters
+                    rt_volume_confirmed = self.check_volume_confirmation(rt_token, rt_candle)
+                    if config.USE_VOLUME_FILTER and not rt_volume_confirmed:
+                        logger.info(f"   ⚠️  {rt_symbol}: Retest confirmed but volume not confirmed → SKIP")
+                        continue
+                    if self.is_nifty_bias_blocking(rt_state["side"]):
+                        logger.info(f"   ⚠️  {rt_symbol}: Retest confirmed but NIFTY blocking → SKIP")
+                        continue
+                    if config.USE_TREND_FILTER and not self.is_trend_aligned(rt_token, rt_c5, rt_state["side"]):
+                        logger.info(f"   ⚠️  {rt_symbol}: Retest confirmed but trend not aligned → SKIP")
+                        continue
+                    
+                    # Calculate volume ratio
+                    rt_volume_ratio = 1.0
+                    try:
+                        lookback = config.VOLUME_LOOKBACK_CANDLES
+                        start_time = now - datetime.timedelta(minutes=lookback * 5)
+                        rt_candles = self.kite.get_historical_data(rt_token, start_time, now, interval="5minute")
+                        if rt_candles and len(rt_candles) >= 5:
+                            volumes = [c['volume'] for c in rt_candles[-lookback:]]
+                            avg_vol = sum(volumes) / len(volumes) if volumes else 1
+                            rt_volume_ratio = rt_v / avg_vol if avg_vol > 0 else 1.0
+                    except Exception:
+                        rt_volume_ratio = 1.0
+                    
+                    rt_breakout_strength = abs(rt_c5 - rt_state["trigger"]) / rt_state["trigger"]
+                    rt_data["side"] = rt_state["side"]
+                    
+                    confidence, breakdown = self.calculate_signal_confidence(
+                        rt_symbol, rt_data, rt_candle, rt_volume_ratio, rt_breakout_strength
+                    )
+                    
+                    if confidence >= config.MIN_CONFIDENCE_SCORE:
+                        sl_price = self.calculate_dynamic_sl(rt_state["side"], rt_vwap, rt_h5, rt_l5)
+                        sl_price = self.apply_stoploss_distance_factor(rt_c5, sl_price, rt_state["side"])
+                        
+                        valid_signals.append({
+                            'symbol': rt_symbol,
+                            'data': rt_data,
+                            'entry_side': rt_state["side"],
+                            'entry_price': rt_c5,
+                            'sl_price': sl_price,
+                            'confidence': confidence,
+                            'breakdown': breakdown,
+                            'volume_ratio': rt_volume_ratio,
+                            'breakout_strength': rt_breakout_strength
+                        })
+                        logger.info(f"   ✅ {rt_symbol}: RETEST CONFIRMED {rt_state['side']} | Confidence: {confidence:.2f}")
+                    
+                    retests_to_remove.append(rt_symbol)
+                
+                for rt_sym in retests_to_remove:
+                    pending_retests.pop(rt_sym, None)
             
             for symbol, data in symbols_data.items():
                 # Skip if already have position
@@ -2725,37 +2921,65 @@ class KiteApp:
                 entry_price = None
                 breakout_strength = 0
                 
+                # Log price vs triggers for debugging no-trade days
+                if c_5 > long_trigger * 0.998 or c_5 < short_trigger * 1.002:
+                    logger.info(f"   📍 {symbol}: close=₹{c_5:.2f} | long_trigger=₹{long_trigger:.2f} | short_trigger=₹{short_trigger:.2f} | vwap=₹{vwap:.2f} | bias={data.get('open_bias','?')}")
+                
                 # Check for LONG signal
                 if c_5 > long_trigger and c_5 > vwap:
                     # SKIP_OPEN_BIAS_SHORT: Skip ALL trades when open_bias=SHORT
                     if getattr(config, 'SKIP_OPEN_BIAS_SHORT', False) and data.get('open_bias') == "SHORT":
+                        logger.info(f"   ⚠️  {symbol}: LONG breakout detected but open_bias=SHORT → SKIP")
                         continue
                     
                     # Apply soft cutoff restrictions
                     if self.entry_window_state == "SOFT" and not volume_confirmed:
+                        logger.info(f"   ⚠️  {symbol}: LONG breakout in SOFT window without volume → SKIP")
                         continue
+                    
+                    # NIFTY Downtrend: skip LONGs in soft cutoff window
+                    if self.entry_window_state == "SOFT" and getattr(config, 'NIFTY_DOWNTREND_SKIP_LONG_IN_SOFT', False):
+                        if getattr(self, 'nifty_bias', 'NEUTRAL') == "SHORT":
+                            logger.info(f"   ⚠️  {symbol}: LONG in SOFT window + NIFTY downtrend → SKIP")
+                            continue
                     
                     # NIFTY filter
                     if self.is_nifty_bias_blocking("BUY"):
+                        logger.info(f"   ⚠️  {symbol}: LONG breakout blocked by NIFTY bias ({self.nifty_bias}) → SKIP")
                         continue
                     
                     # ENHANCEMENT 2: Gap alignment filter
                     if getattr(config, 'USE_GAP_FILTER', False) and getattr(config, 'GAP_CONTRADICTION_SKIP', False):
                         gap_pct = data.get('gap_pct', 0)
                         if gap_pct < -config.GAP_ALIGNMENT_MIN_PCT:
+                            logger.info(f"   ⚠️  {symbol}: LONG breakout but gap {gap_pct:+.2f}% contradicts → SKIP")
                             continue
                     
                     # ENHANCEMENT 3: Open position bias filter
                     if getattr(config, 'USE_OPEN_POSITION_FILTER', False) and getattr(config, 'OPEN_POSITION_SKIP_CONTRADICTION', False):
                         if data.get('open_bias') == "SHORT":
+                            logger.info(f"   ⚠️  {symbol}: LONG breakout but open_bias contradicts → SKIP")
                             continue
                     
                     # Trend filter
                     if config.USE_TREND_FILTER and not self.is_trend_aligned(token, c_5, "BUY"):
+                        logger.info(f"   ⚠️  {symbol}: LONG breakout but 15min trend not aligned → SKIP")
                         continue
                     
                     # Liquidity filter
                     if config.USE_LIQUIDITY_FILTER and not self.check_liquidity_and_spread(data["exchange"], symbol):
+                        logger.info(f"   ⚠️  {symbol}: LONG breakout but liquidity filter failed → SKIP")
+                        continue
+                    
+                    # Retest gate: queue breakout for retest instead of immediate entry
+                    if getattr(config, 'USE_RETEST_ENTRY', False) and symbol not in pending_retests:
+                        pending_retests[symbol] = {
+                            "side": "BUY",
+                            "trigger": long_trigger,
+                            "last_candle_time": candle_time,
+                            "candles_waited": 0
+                        }
+                        logger.info(f"   🧪 {symbol}: LONG breakout detected → waiting for retest confirmation")
                         continue
                     
                     entry_side = "BUY"
@@ -2764,31 +2988,47 @@ class KiteApp:
                 
                 # Check for SHORT signal
                 elif c_5 < short_trigger and c_5 < vwap:
-                    # SKIP_OPEN_BIAS_SHORT: Skip ALL trades when open_bias=SHORT
-                    if getattr(config, 'SKIP_OPEN_BIAS_SHORT', False) and data.get('open_bias') == "SHORT":
-                        continue
+                    # NOTE: SKIP_OPEN_BIAS_SHORT does NOT apply to SELL signals.
+                    # A SHORT open_bias (open near high, sold down) CONFIRMS a short breakout.
+                    # Only skip BUY signals when open_bias=SHORT (done above).
                     
                     if self.entry_window_state == "SOFT" and not volume_confirmed:
+                        logger.info(f"   ⚠️  {symbol}: SHORT breakout in SOFT window without volume → SKIP")
                         continue
                     
                     if self.is_nifty_bias_blocking("SELL"):
+                        logger.info(f"   ⚠️  {symbol}: SHORT breakout blocked by NIFTY bias ({self.nifty_bias}) → SKIP")
                         continue
                     
                     # ENHANCEMENT 2: Gap alignment filter
                     if getattr(config, 'USE_GAP_FILTER', False) and getattr(config, 'GAP_CONTRADICTION_SKIP', False):
                         gap_pct = data.get('gap_pct', 0)
                         if gap_pct > config.GAP_ALIGNMENT_MIN_PCT:
+                            logger.info(f"   ⚠️  {symbol}: SHORT breakout but gap {gap_pct:+.2f}% contradicts → SKIP")
                             continue
                     
                     # ENHANCEMENT 3: Open position bias filter
                     if getattr(config, 'USE_OPEN_POSITION_FILTER', False) and getattr(config, 'OPEN_POSITION_SKIP_CONTRADICTION', False):
                         if data.get('open_bias') == "LONG":
+                            logger.info(f"   ⚠️  {symbol}: SHORT breakout but open_bias=LONG contradicts → SKIP")
                             continue
                     
                     if config.USE_TREND_FILTER and not self.is_trend_aligned(token, c_5, "SELL"):
+                        logger.info(f"   ⚠️  {symbol}: SHORT breakout but 15min trend not aligned → SKIP")
                         continue
                     
                     if config.USE_LIQUIDITY_FILTER and not self.check_liquidity_and_spread(data["exchange"], symbol):
+                        continue
+                    
+                    # Retest gate: queue breakout for retest instead of immediate entry
+                    if getattr(config, 'USE_RETEST_ENTRY', False) and symbol not in pending_retests:
+                        pending_retests[symbol] = {
+                            "side": "SELL",
+                            "trigger": short_trigger,
+                            "last_candle_time": candle_time,
+                            "candles_waited": 0
+                        }
+                        logger.info(f"   🧪 {symbol}: SHORT breakout detected → waiting for retest confirmation")
                         continue
                     
                     entry_side = "SELL"
@@ -2823,6 +3063,8 @@ class KiteApp:
                         })
                         
                         logger.info(f"   ✅ {symbol}: {entry_side} signal | Confidence: {confidence:.2f}")
+                    else:
+                        logger.info(f"   ⚠️  {symbol}: {entry_side} signal confidence {confidence:.2f} < min {config.MIN_CONFIDENCE_SCORE} → SKIP")
             
             # ===== PHASE 2: ALLOCATE CAPITAL & EXECUTE =====
             if valid_signals:
@@ -2855,6 +3097,161 @@ class KiteApp:
             logger.info("\n📊 No positions entered today.")
             self.generate_final_report()
             return True
+    
+    def _check_positions_during_scan(self, now):
+        """
+        Quick SL/exit check for active positions while still in the entry scanning phase.
+        Prevents positions from blowing past stoploss while bot waits for more entries.
+        """
+        try:
+            # Batch-fetch quotes for all active positions
+            instrument_keys = [
+                f"{pos.get('exchange', 'NSE')}:{symbol}"
+                for symbol, pos in self.active_positions.items()
+            ]
+            batch_quotes = self.kite.get_quotes_batch(instrument_keys) if instrument_keys else {}
+
+            positions_to_remove = []
+
+            for symbol, pos in self.active_positions.items():
+                instrument_key = f"{pos.get('exchange', 'NSE')}:{symbol}"
+                quote = batch_quotes.get(instrument_key)
+                if not quote:
+                    continue
+
+                current_price = quote.get('last_price', 0)
+                if current_price <= 0:
+                    continue
+
+                entry_price = pos['entry_price']
+                sl_price = pos['sl_price']
+                side = pos['side']
+                quantity = pos.get('remaining_quantity', pos['quantity'])
+
+                # Use original_risk for R-multiple to avoid premature partials after SL tightening
+                orig_risk = pos.get('original_risk', abs(entry_price - sl_price)) or 1
+
+                if side == "BUY":
+                    pnl_per_share = current_price - entry_price
+                    risk = orig_risk
+                    r_multiple = pnl_per_share / risk
+                    hit_sl = current_price <= sl_price
+                else:
+                    pnl_per_share = entry_price - current_price
+                    risk = orig_risk
+                    r_multiple = pnl_per_share / risk
+                    hit_sl = current_price >= sl_price
+
+                total_pnl = pos.get('realized_pnl', 0) + pnl_per_share * quantity
+
+                # Log status every check so it's visible
+                status_icon = "🟢" if total_pnl >= 0 else "🔴"
+                logger.info(
+                    f"   {status_icon} [SCAN-PHASE] {symbol} ({side}): ₹{current_price:.2f} | "
+                    f"R:{r_multiple:.2f} | P&L:₹{total_pnl:,.0f} | SL:₹{sl_price:.2f} | Qty:{quantity}"
+                )
+
+                # ===== STOP LOSS =====
+                if hit_sl:
+                    logger.info(f"🛑 {symbol}: STOP LOSS HIT at ₹{current_price:.2f} (during scan phase)")
+                    self.log_to_db(f"🛑 {symbol}: STOP LOSS HIT at ₹{current_price:.2f} (during scan phase)")
+                    self.exit_position(symbol, current_price, "STOPLOSS")
+                    positions_to_remove.append(symbol)
+                    continue
+
+                # ===== PARTIAL BOOKING (0.5R and 1R targets) =====
+                if getattr(config, 'USE_PARTIAL_BOOKING', False):
+                    original_qty = pos['quantity']
+                    first_close_qty = int(original_qty * config.PARTIAL_BOOKING_FIRST_CLOSE_PCT)
+                    second_close_qty = int(original_qty * config.PARTIAL_BOOKING_SECOND_CLOSE_PCT)
+                    if original_qty >= 1 and first_close_qty == 0:
+                        first_close_qty = 1
+                    if original_qty >= 2 and second_close_qty == 0:
+                        second_close_qty = 1
+
+                    # 0.5R partial
+                    if r_multiple >= config.PARTIAL_BOOKING_FIRST_TARGET_R and not pos.get('partial_booked_1'):
+                        close_qty = min(first_close_qty, pos['remaining_quantity'] - 1) if pos['remaining_quantity'] > 1 else 1
+                        if close_qty > 0:
+                            logger.info(f"💰 {symbol}: 0.5R reached (scan phase) - Booking {close_qty} shares")
+                            self.partial_exit_position(symbol, current_price, close_qty, "0.5R TARGET")
+                            pos['partial_booked_1'] = True
+                            partial_pnl = pnl_per_share * close_qty
+                            pos['realized_pnl'] = pos.get('realized_pnl', 0) + partial_pnl
+                            pos['remaining_quantity'] -= close_qty
+
+                            # Progressive SL Stage 1: tighten SL but keep some risk room
+                            if getattr(config, 'USE_PROGRESSIVE_SL', False):
+                                orig_risk = pos.get('original_risk', risk)
+                                stage1_factor = getattr(config, 'PROGRESSIVE_SL_STAGE1_FACTOR', 0.25)
+                                if side == "BUY":
+                                    new_sl = entry_price - (orig_risk * stage1_factor)
+                                else:
+                                    new_sl = entry_price + (orig_risk * stage1_factor)
+                                pos['sl_price'] = new_sl
+                                logger.info(f"   📍 {symbol}: Progressive SL Stage 1 → ₹{new_sl:.2f} (keep {stage1_factor*100:.0f}% risk below entry)")
+
+                            try:
+                                trade_journal.log_partial_exit(
+                                    symbol=symbol, side=side, exit_price=current_price,
+                                    quantity_exited=close_qty, reason="0.5R TARGET (scan)",
+                                    entry_price=entry_price, sl_price=sl_price,
+                                    r_multiple=r_multiple,
+                                    realized_pnl=pos.get('realized_pnl', 0),
+                                    remaining_quantity=pos['remaining_quantity'],
+                                )
+                            except Exception:
+                                pass
+
+                    # 1R partial + progressive or breakeven SL
+                    if r_multiple >= config.PARTIAL_BOOKING_SECOND_TARGET_R and not pos.get('partial_booked_2'):
+                        close_qty = min(second_close_qty, pos['remaining_quantity'] - 1) if pos['remaining_quantity'] > 1 else pos['remaining_quantity']
+                        if close_qty > 0:
+                            logger.info(f"💰 {symbol}: 1R reached (scan phase) - Booking {close_qty} shares")
+                            self.partial_exit_position(symbol, current_price, close_qty, "1R TARGET")
+                            pos['partial_booked_2'] = True
+                            partial_pnl = pnl_per_share * close_qty
+                            pos['realized_pnl'] = pos.get('realized_pnl', 0) + partial_pnl
+                            pos['remaining_quantity'] -= close_qty
+
+                            if not pos.get('sl_at_breakeven'):
+                                if getattr(config, 'USE_PROGRESSIVE_SL', False):
+                                    # Progressive SL Stage 2: lock in profit above entry
+                                    orig_risk = pos.get('original_risk', risk)
+                                    stage2_factor = getattr(config, 'PROGRESSIVE_SL_STAGE2_FACTOR', -0.10)
+                                    if side == "BUY":
+                                        new_sl = entry_price - (orig_risk * stage2_factor)  # negative factor → above entry
+                                    else:
+                                        new_sl = entry_price + (orig_risk * stage2_factor)  # negative factor → below entry (profit for shorts)
+                                    pos['sl_price'] = new_sl
+                                    logger.info(f"   📍 {symbol}: Progressive SL Stage 2 → ₹{new_sl:.2f} (profit locked)")
+                                else:
+                                    pos['sl_price'] = entry_price
+                                    logger.info(f"   📍 {symbol}: SL moved to breakeven (₹{entry_price:.2f})")
+                                pos['sl_at_breakeven'] = True
+
+                            try:
+                                trade_journal.log_partial_exit(
+                                    symbol=symbol, side=side, exit_price=current_price,
+                                    quantity_exited=close_qty, reason="1R TARGET (scan)",
+                                    entry_price=entry_price, sl_price=pos['sl_price'],
+                                    r_multiple=r_multiple,
+                                    realized_pnl=pos.get('realized_pnl', 0),
+                                    remaining_quantity=pos['remaining_quantity'],
+                                    sl_moved_to_breakeven=pos.get('sl_at_breakeven', False),
+                                )
+                            except Exception:
+                                pass
+
+                if pos.get('remaining_quantity', 0) <= 0:
+                    positions_to_remove.append(symbol)
+
+            for symbol in positions_to_remove:
+                if symbol in self.active_positions:
+                    del self.active_positions[symbol]
+
+        except Exception as e:
+            logger.error(f"Error in scan-phase position check: {e}")
     
     def monitor_multi_stock_positions(self, symbols_data):
         """
@@ -2912,14 +3309,15 @@ class KiteApp:
                     side = pos['side']
                     quantity = pos['remaining_quantity']
                     
-                    # Calculate P&L
+                    # Calculate P&L — use original_risk for R-multiple to avoid premature partials after SL tightening
+                    orig_risk = pos.get('original_risk', abs(entry_price - sl_price)) or 1
                     if side == "BUY":
                         pnl_per_share = current_price - entry_price
-                        r_multiple = pnl_per_share / abs(entry_price - sl_price) if abs(entry_price - sl_price) > 0 else 0
+                        r_multiple = pnl_per_share / orig_risk
                         hit_sl = current_price <= sl_price
                     else:
                         pnl_per_share = entry_price - current_price
-                        r_multiple = pnl_per_share / abs(entry_price - sl_price) if abs(entry_price - sl_price) > 0 else 0
+                        r_multiple = pnl_per_share / orig_risk
                         hit_sl = current_price >= sl_price
                     
                     # Include realized P&L from partial exits
@@ -2967,8 +3365,32 @@ class KiteApp:
                             pos['realized_pnl'] = pos.get('realized_pnl', 0) + partial_pnl
                             pos['remaining_quantity'] -= close_qty
                             logger.info(f"   💵 Realized P&L from 0.5R exit: ₹{partial_pnl:,.2f}")
+
+                            # Progressive SL Stage 1: tighten SL but keep some risk room
+                            if getattr(config, 'USE_PROGRESSIVE_SL', False):
+                                orig_risk = pos.get('original_risk', abs(entry_price - sl_price))
+                                stage1_factor = getattr(config, 'PROGRESSIVE_SL_STAGE1_FACTOR', 0.25)
+                                if side == "BUY":
+                                    new_sl = entry_price - (orig_risk * stage1_factor)
+                                else:
+                                    new_sl = entry_price + (orig_risk * stage1_factor)
+                                pos['sl_price'] = new_sl
+                                logger.info(f"   📍 {symbol}: Progressive SL Stage 1 → ₹{new_sl:.2f} (keep {stage1_factor*100:.0f}% risk below entry)")
+
+                            # ── Trade Journal: partial exit ──
+                            try:
+                                trade_journal.log_partial_exit(
+                                    symbol=symbol, side=side, exit_price=current_price,
+                                    quantity_exited=close_qty, reason="0.5R TARGET",
+                                    entry_price=entry_price, sl_price=sl_price,
+                                    r_multiple=r_multiple,
+                                    realized_pnl=pos.get('realized_pnl', 0),
+                                    remaining_quantity=pos['remaining_quantity'],
+                                )
+                            except Exception as je:
+                                logger.warning(f"Trade journal partial log failed: {je}")
                     
-                    # Partial booking at 1R (second target) + move SL to breakeven
+                    # Partial booking at 1R (second target) + progressive SL
                     if r_multiple >= config.PARTIAL_BOOKING_SECOND_TARGET_R and not pos['partial_booked_2']:
                         close_qty = min(second_close_qty, pos['remaining_quantity'] - 1) if pos['remaining_quantity'] > 1 else pos['remaining_quantity']
                         if close_qty > 0:
@@ -2981,11 +3403,36 @@ class KiteApp:
                             pos['remaining_quantity'] -= close_qty
                             logger.info(f"   💵 Realized P&L from 1R exit: ₹{partial_pnl:,.2f}")
                             
-                            # Move SL to breakeven
+                            # Move SL: progressive or breakeven
                             if not pos['sl_at_breakeven']:
-                                pos['sl_price'] = entry_price
+                                if getattr(config, 'USE_PROGRESSIVE_SL', False):
+                                    # Progressive SL Stage 2: lock in profit above entry
+                                    orig_risk = pos.get('original_risk', abs(entry_price - sl_price))
+                                    stage2_factor = getattr(config, 'PROGRESSIVE_SL_STAGE2_FACTOR', -0.10)
+                                    if side == "BUY":
+                                        new_sl = entry_price - (orig_risk * stage2_factor)  # negative factor → above entry
+                                    else:
+                                        new_sl = entry_price + (orig_risk * stage2_factor)  # negative factor → below entry (profit locked)
+                                    pos['sl_price'] = new_sl
+                                    logger.info(f"   📍 {symbol}: Progressive SL Stage 2 → ₹{new_sl:.2f} (profit locked)")
+                                else:
+                                    pos['sl_price'] = entry_price
+                                    logger.info(f"   📍 {symbol}: SL moved to breakeven (₹{entry_price:.2f})")
                                 pos['sl_at_breakeven'] = True
-                                logger.info(f"   📍 {symbol}: SL moved to breakeven (₹{entry_price:.2f})")
+
+                            # ── Trade Journal: partial exit ──
+                            try:
+                                trade_journal.log_partial_exit(
+                                    symbol=symbol, side=side, exit_price=current_price,
+                                    quantity_exited=close_qty, reason="1R TARGET",
+                                    entry_price=entry_price, sl_price=pos['sl_price'],
+                                    r_multiple=r_multiple,
+                                    realized_pnl=pos.get('realized_pnl', 0),
+                                    remaining_quantity=pos['remaining_quantity'],
+                                    sl_moved_to_breakeven=pos.get('sl_at_breakeven', False),
+                                )
+                            except Exception as je:
+                                logger.warning(f"Trade journal partial log failed: {je}")
                     
                     # Stage 3: Exit remaining at 2R target (BUG 6 fix - was missing)
                     if pos['partial_booked_2'] and r_multiple >= config.PROFIT_TARGET_RATIO and pos['remaining_quantity'] > 0:
@@ -3043,13 +3490,33 @@ class KiteApp:
             total_pnl = realized_pnl + final_exit_pnl
             
             self.position_pnls[symbol] = total_pnl
-            self.allocated_capital -= pos['capital_allocated']
+            self.allocated_capital -= pos.get('capital_allocated', 0)
             
             logger.info(f"   ✅ {symbol} EXITED | Reason: {reason}")
             logger.info(f"      Final exit P&L: ₹{final_exit_pnl:,.2f}")
             logger.info(f"      Previously realized: ₹{realized_pnl:,.2f}")
             logger.info(f"      TOTAL P&L: ₹{total_pnl:,.2f}")
             self.log_to_db(f"✅ {symbol} exited ({reason}) Total P&L: ₹{total_pnl:,.2f}")
+
+            # ── Trade Journal: log FULL EXIT ──
+            try:
+                entry_time = pos.get('entry_time')
+                trade_journal.log_full_exit(
+                    symbol=symbol,
+                    side=side,
+                    exit_price=exit_price,
+                    quantity_exited=quantity,
+                    reason=reason,
+                    entry_price=pos['entry_price'],
+                    sl_price=pos['sl_price'],
+                    realized_pnl_from_partials=realized_pnl,
+                    final_exit_pnl=final_exit_pnl,
+                    total_pnl=total_pnl,
+                    entry_time=str(entry_time) if entry_time else None,
+                    position_data=pos,
+                )
+            except Exception as je:
+                logger.warning(f"Trade journal exit log failed: {je}")
             
         except Exception as e:
             logger.error(f"Error exiting {symbol}: {e}")
@@ -3112,6 +3579,21 @@ class KiteApp:
         logger.info("=" * 60 + "\n")
         
         self.log_to_db(f"📊 Session complete: {len(self.position_pnls)} positions, P&L: ₹{total_pnl:,.2f}, Win Rate: {win_rate:.1f}%")
+
+        # ── Trade Journal: log SESSION SUMMARY ──
+        try:
+            trade_journal.log_session_summary(
+                date=None,
+                symbols_scanned=list(getattr(self, '_last_symbols_data_keys', [])),
+                symbols_traded=list(self.position_pnls.keys()),
+                total_pnl=total_pnl,
+                account_balance=self.account_balance,
+                positions_entered=len(self.position_pnls),
+                positions_closed=len(self.position_pnls),
+                position_pnls=self.position_pnls,
+            )
+        except Exception as je:
+            logger.warning(f"Trade journal session summary failed: {je}")
 
     def check_entry_window_and_rules(self):
         """
@@ -3195,25 +3677,35 @@ class KiteApp:
     
     def apply_stoploss_distance_factor(self, entry_price, sl_price, side):
         """
-        Apply STOPLOSS_DISTANCE_FACTOR to tighten stop loss
-        Default factor = 0.5 means SL moves 50% closer to entry
+        Apply STOPLOSS_DISTANCE_FACTOR to adjust stop loss distance,
+        then apply SL_BREATHING_ROOM_FACTOR for extra cushion.
         
-        Example: Entry=100, Original SL=90 (risk=10)
-                 With factor=0.5: New SL=95 (risk=5, which is 50% of original)
+        Step 1: STOPLOSS_DISTANCE_FACTOR scales the raw risk distance
+                factor=1.0 means keep full distance; factor=0.5 means halve it
+        Step 2: SL_BREATHING_ROOM_FACTOR adds extra buffer beyond the SL
+                factor=1.25 means SL is placed 25% further from entry
+        
+        Example (BUY): Entry=100, Raw SL=95 (risk=5)
+          After distance factor (1.0): SL=95 (risk=5, unchanged)
+          After breathing room (1.25): SL=93.75 (risk=6.25, gives trade room)
         """
-        factor = getattr(config, 'STOPLOSS_DISTANCE_FACTOR', 0.5)
-        if factor >= 1.0:
-            return sl_price  # No change if factor >= 1.0
+        factor = getattr(config, 'STOPLOSS_DISTANCE_FACTOR', 1.0)
+        breathing_room = getattr(config, 'SL_BREATHING_ROOM_FACTOR', 1.0)
         
         risk_distance = abs(entry_price - sl_price)
-        new_risk_distance = risk_distance * factor
+        
+        # Step 1: Apply distance factor (tighten or widen base SL)
+        risk_distance = risk_distance * factor
+        
+        # Step 2: Apply breathing room (always widens SL for more room)
+        risk_distance = risk_distance * breathing_room
         
         if side == "BUY":
-            adjusted_sl = entry_price - new_risk_distance
+            adjusted_sl = entry_price - risk_distance
         else:  # SELL
-            adjusted_sl = entry_price + new_risk_distance
+            adjusted_sl = entry_price + risk_distance
         
-        logger.info(f"   Applying STOPLOSS_DISTANCE_FACTOR ({factor}): Original SL ₹{sl_price:.2f} -> Adjusted SL ₹{adjusted_sl:.2f}")
+        logger.info(f"   SL calc: dist_factor={factor}, breathing_room={breathing_room} | Original SL ₹{sl_price:.2f} → Adjusted SL ₹{adjusted_sl:.2f} (risk ₹{risk_distance:.2f})")
         return adjusted_sl
 
     def calculate_dynamic_sl(self, side, vwap, h_5, l_5):

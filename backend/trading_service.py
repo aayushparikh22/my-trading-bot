@@ -34,7 +34,7 @@ class TradingService:
                 if user.id in self.bots:
                     del self.bots[user.id]
             else:
-                logger.error('Bot already running for user {user.id}')
+                logger.error(f'Bot already running for user {user.id}')
                 raise Exception('Bot already running')
         
         # Create bot thread with credentials as separate args

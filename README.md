@@ -56,7 +56,7 @@
 │                                                                     │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐          │
 │  │  bot_kite.py  │  │ kite_service │  │   config.py      │          │
-│  │  (3550+ lines)│  │  (580 lines) │  │  (406 lines)     │          │
+│  │  (3800+ lines)│  │  (580 lines) │  │  (~450 lines)    │          │
 │  │  40+ methods  │  │  25+ methods │  │  (all params)    │          │
 │  └──────┬───────┘  └──────┬───────┘  └──────────────────┘          │
 │         │                 │                                          │
@@ -110,8 +110,8 @@
 ```
 Trading-bot/
 ├── app_files/                  # Core bot engine
-│   ├── bot_kite.py             # Main trading algorithm (3550+ lines, 40+ methods)
-│   ├── config.py               # All strategy parameters & configuration (406 lines)
+│   ├── bot_kite.py             # Main trading algorithm (3800+ lines, 40+ methods)
+│   ├── config.py               # All strategy parameters & configuration (~450 lines)
 │   ├── kite_service.py         # Kite API wrapper with caching & rate limiting (580 lines)
 │   ├── kite_login.py           # Automated 5-step Kite login (TOTP 2FA)
 │   ├── kite_session.py         # Session manager with token persistence
@@ -200,18 +200,19 @@ The bot implements an **Opening Range Breakout (ORB)** strategy enhanced with VW
   │
 09:30 ──── Primary Entry Window Opens ──────────────────────────
   │
-  │   PHASE 2: SIGNAL SCANNING (09:30 → 10:30)
+  │   PHASE 2: SIGNAL SCANNING (09:30 → 10:15)
   │   • Poll 5-minute candles every 30 seconds (optimized from 60s)
   │   • Check each symbol for breakout conditions
   │   • Apply all filters (Volume, NIFTY, Trend, Gap, Open Bias)
+  │   • Wait for breakout RETEST confirmation (max 3 candles)
   │   • Calculate 7-factor confidence score
   │   • Execute trade when signal passes all filters
   │
-  │   09:30-10:15  PRIMARY WINDOW   → Normal entry rules
-  │   10:15-10:30  SOFT CUTOFF      → Extra confirmation needed (2x volume)
-  │   10:30+       HARD STOP        → No new entries allowed
+  │   09:30-09:50  PRIMARY WINDOW   → Normal entry rules (peak WR: 52-55%)
+  │   09:50-10:15  SOFT CUTOFF      → 2.5× volume required, skip LONGs in NIFTY downtrend
+  │   10:15+       HARD STOP        → No new entries allowed
   │
-10:30 ──── Entry Window Closes ─────────────────────────────────
+10:15 ──── Entry Window Closes ─────────────────────────────────
   │
   │   PHASE 3: POSITION MANAGEMENT (until 15:25)
   │   • Monitor live price every 10 seconds
@@ -250,18 +251,31 @@ NIFTY 50 is below its own VWAP (hard requirement)
 
 ### 3.3 Stop Loss Calculation
 
-The bot uses a **dynamic stop loss** with the full risk distance (backtest-optimized):
+The bot uses a **dynamic stop loss** with breathing room and progressive tightening:
 
 ```python
 # Standard ORB SL = VWAP or Candle Low/High
 # STOPLOSS_DISTANCE_FACTOR = 1.0 (full range — gives trades maximum room)
+# SL_BREATHING_ROOM_FACTOR = 1.25 (25% extra cushion beyond calculated SL)
 
 risk = abs(entry_price - standard_sl)
-actual_sl = entry_price - (risk * 1.0)   # For LONG
-actual_sl = entry_price + (risk * 1.0)   # For SHORT
+risk = risk * 1.0    # Distance factor (full range)
+risk = risk * 1.25   # Breathing room (+25% extra)
+
+actual_sl = entry_price - risk   # For LONG
+actual_sl = entry_price + risk   # For SHORT
 ```
 
-> **Backtest insight**: `SL=1.0` was the single biggest improvement — +₹1,320 vs +₹339 at `SL=0.75`. Giving trades the full range to develop dramatically reduced premature stop-outs.
+**Progressive SL Tightening** — After partial profit-taking, the SL is moved gradually instead of jumping straight to breakeven:
+
+| Stage | Trigger | SL Moves To | Example (Entry=₹100, Risk=₹5) |
+|-------|---------|-------------|-------------------------------|
+| Initial | Entry | Full SL (breathing room) | SL = ₹93.75 |
+| Stage 1 | 1.0R partial (25%) | Entry - 25% of original risk | SL = ₹98.75 |
+| Stage 2 | 1.0R partial (20%) | Entry + 10% of original risk (profit locked) | SL = ₹100.50 |
+| Trail | 1.5R+ | ATR trailing (1.2 × ATR) | Dynamic |
+
+> **Backtest insight**: `SL=1.0` was the single biggest improvement — +₹1,320 vs +₹339 at `SL=0.75`. The 25% breathing room further reduces premature stop-outs from intraday noise. Progressive SL tightening prevents the shock of a sudden breakeven move that often gets clipped by pullbacks.
 
 ---
 
@@ -274,11 +288,12 @@ Every breakout signal must pass through a **cascade of filters** before becoming
 ```
 Breakout Detected (price > trigger + above VWAP)
     │
-    ├── ① Entry Window Filter ── Is it within 09:30-10:30?
-    │                             (SOFT window 10:15-10:30 needs 2x volume)
+    ├── ① Entry Window Filter ── Is it within 09:30-10:15?
+    │                             (SOFT window 09:50-10:15 needs 2.5× volume)
     │
-    ├── ② Volume Confirmation ── Is current volume > 1.0× average?
-    │                             (time-of-day adjusted: 1.2× early, 0.8× late)
+    ├── ② Volume Confirmation ── Is current volume > threshold?
+    │                             PRIMARY: 1.0× avg (time-of-day adjusted)
+    │                             SOFT: 2.5× avg (higher bar for late entries)
     │
     ├── ③ Gap Alignment ──────── Does pre-market gap support direction?
     │                             LONG: skip if gap < -0.3%
@@ -290,16 +305,28 @@ Breakout Detected (price > trigger + above VWAP)
     │
     ├── ⑤ NIFTY Index Filter ── Is NIFTY 50 trending in same direction?
     │                             Soft bias for LONG, hard block for SHORT
+    │                             NIFTY downtrend → skip LONGs in soft cutoff
     │
-    ├── ⑥ Trend Filter ──────── Is 15-min VWAP trending with signal?
+    ├── ⑥ NIFTY Regime Sizing ── Adjust position size by market regime
+    │                             Uptrend + LONG: +20% size boost
+    │                             Downtrend + LONG: -30% size penalty
+    │                             Downtrend + SHORT: +20% size boost
+    │                             Ranging: 60% standard size
     │
-    ├── ⑦ Range Quality ──────── Is opening range 0.1%-2.5% of price?
+    ├── ⑦ Trend Filter ──────── Is 15-min VWAP trending with signal?
+    │
+    ├── ⑧ Range Quality ──────── Is opening range 0.1%-2.5% of price?
     │                             (Rejects too narrow/wide ranges)
     │
-    ├── ⑧ Retest Confirmation ── Did price retest the breakout level?
+    ├── ⑨ Dynamic ATR Buffer ── Volatility-regime-aware buffer
+    │                             Tight range (<0.5%): 0.30 × ATR (stronger conviction)
+    │                             Normal (0.5-1.0%): 0.15 × ATR (standard)
+    │                             Wide range (>1.0%): 0.08 × ATR (already volatile)
+    │
+    ├── ⑩ Retest Confirmation ── Did price retest the breakout level?
     │                             (Max 3 candles to wait for retest)
     │
-    └── ⑨ Liquidity Filter ──── Is daily volume > 500K shares?
+    └── ⑪ Liquidity Filter ──── Is daily volume > 500K shares?
                                   (Currently disabled to save API calls)
 
     ⚡ Active positions are monitored for SL/exit during each scan cycle
@@ -392,38 +419,39 @@ The bot uses a **"Let Winners Run"** exit strategy that books profits in three s
                                 │                                            │
                     ┌───────────┤                                            │
                     │ STAGE 2   │                                            │
-                    │ Exit 20%  │     55% riding with SL at entry           │
-                    │ at 1.0R   │     (GUARANTEED — can't lose)              │
+                    │ Exit 20%  │     55% riding with SL above entry        │
+                    │ at 1.0R   │     (PROFIT LOCKED — progressive SL)       │
          ┌──────────┤           │                                            │
          │ STAGE 1  │  SL moves │                                            │
-         │ Exit 25% │  to ENTRY │                                            │
-         │ at 1.0R  │    ↕      │                                            │
-    ─────┤          │           │                                            │
+         │ Exit 25% │  to entry │                                            │
+         │ at 1.0R  │  - 25%    │                                            │
+    ─────┤          │  risk     │                                            │
   ENTRY  │          │           │                                            │
     ─────┤──────────┤───────────┤────────────────────────────────────────────┤
          │    SL    │           │                                      3:25 PM
-         │  (full)  │           │
+         │ (breath- │           │
+         │  ing rm) │           │
          └──────────┘           │
               ↑                 │
         Initial SL              2.5R Target or EOD
-     (100% of risk)
+     (125% of risk)
 ```
 
 ### Stage Breakdown
 
-| Stage | R-Multiple | % of Position | Action | After Exit |
-|-------|-----------|--------------|--------|-----------|
-| **Stage 1** | 1.0R | 25% | Book quick profit | SL stays at original, 75% still running |
-| **Stage 2** | 1.0R | 20% | Lock 1:1 RR profit | **SL moves to entry** → remaining 55% is risk-free |
+| Stage | R-Multiple | % of Position | Action | SL After Exit |
+|-------|-----------|--------------|--------|---------------|
+| **Stage 1** | 1.0R | 25% | Book quick profit | SL tightened to entry - 25% of original risk |
+| **Stage 2** | 1.0R | 20% | Lock 1:1 RR profit | **SL moves above entry** (+10% of original risk = profit locked) |
 | **Stage 3** | 2.5R or 3:25 PM | 55% | Exit runner (ATR-trailed) | Position fully closed |
 
-> **Backtest optimization**: First target moved from 0.5R → 1.0R. This lets trades breathe longer and improves overall win rate. The profit target ratio was also increased from 2.0R → 2.5R to let runners go further.
+> **Backtest optimization**: First target moved from 0.5R → 1.0R. This lets trades breathe longer and improves overall win rate. The profit target ratio was also increased from 2.0R → 2.5R to let runners go further. Progressive SL tightening prevents the sudden breakeven jump that often causes premature stop-outs.
 
 ### Why 25/20/55 Instead of 25/50/25?
 
 The old split (25/50/25) closed 50% at 1R, leaving only 25% to run. The new split:
 - **Keeps 55% riding** after breakeven → captures significantly more from big moves
-- After Stage 2, the remaining position is **risk-free** (SL = entry), so letting 55% ride costs nothing
+- After Stage 2, the remaining position has **profit locked** via progressive SL (SL above entry by 10% of original risk), so letting 55% ride is near risk-free
 - On a 3R move: old strategy captures ~1.125R average, new strategy captures ~1.775R average (+58% more profit on runners)
 
 ### Small Quantity Handling
@@ -477,18 +505,18 @@ For each of 50 NIFTY stocks (capped at MAX_STOCKS_TO_SCAN = 20):
 ```python
 # Confidence-proportional allocation with guardrails:
 MIN_ALLOCATION = 10% of capital  # No micro-positions
-MAX_ALLOCATION = 40% of capital  # No over-concentration
-MAX_POSITIONS  = 2 simultaneous  # Concentrated capital (optimized from 5)
-MIN_CONFIDENCE = 0.40            # Minimum score to trade
+MAX_ALLOCATION = 60% of capital  # Allows concentration on best signal
+MAX_POSITIONS  = 1 simultaneous  # Full capital on highest-confidence signal
+MIN_CONFIDENCE = 0.55            # Higher quality bar (raised from 0.40)
 
-# Example: 2 signals with scores 0.8, 0.6
-# Normalized weights: 0.57, 0.43
-# With ₹80,000 effective capital:
-#   Stock A: ₹45,600 (57%) → clamped to ₹32,000 (MAX 40%)
-#   Stock B: ₹34,400 (43%) → clamped to ₹32,000 (MAX 40%)
+# NIFTY Regime-Adaptive Sizing:
+# Uptrend + LONG: 120% of normal size (trend confirmation)
+# Downtrend + LONG: 70% of normal size (counter-trend penalty)
+# Downtrend + SHORT: 120% of normal size (trend confirmation)
+# Ranging/Neutral: 60% of normal size (low-conviction markets)
 ```
 
-> **Backtest insight**: `MAX_POSITIONS = 2` concentrates capital better than 5 positions, producing higher per-trade returns.
+> **Backtest insight**: `MAX_POSITIONS = 1` concentrates capital on the single best signal, producing higher per-trade returns than splitting across 2-5 positions.
 
 ---
 
@@ -899,12 +927,17 @@ The optimized parameters currently in `config.py` were derived from backtesting:
 | Metric | Value |
 |--------|-------|
 | **SL Distance Factor** | 1.0 (full range — biggest single improvement) |
-| **Entry Window** | 09:30-10:30 (extended from 10:15) |
+| **SL Breathing Room** | 1.25× (25% extra cushion beyond SL) |
+| **Progressive SL** | Stage 1: keep 25% risk, Stage 2: lock profit above entry |
+| **Entry Window** | 09:30-10:15 (tightened from 10:30; peak WR at 9:30-9:50) |
+| **Soft Cutoff Volume** | 2.5× average (raised from 2.0×) |
 | **First Partial Target** | 1.0R (up from 0.5R — trades breathe longer) |
 | **Profit Target** | 2.5R (up from 2.0R — let runners go further) |
 | **Volume Multiplier** | 1.0× (down from 1.2× — more quality signals) |
-| **ATR Buffer** | 0.15 × ATR(10) (lower catches more valid breakouts) |
-| **Max Positions** | 2 (down from 5 — concentrates capital better) |
+| **ATR Buffer** | Regime-aware: 0.30/0.15/0.08 × ATR for tight/normal/wide ranges |
+| **Max Positions** | 1 (down from 2 — concentrates capital on best signal) |
+| **Min Confidence** | 0.55 (up from 0.40 — higher quality filter) |
+| **NIFTY Regime Sizing** | +20% LONGs in uptrend, -30% LONGs in downtrend |
 | **Focus Symbols** | Top 11 NIFTY stocks (auto-selected daily or fallback list) |
 | **Portfolio Backtest** | +₹16,007 (+20.01%), 52.2% WR, PF 1.54, MaxDD 1.71% |
 
@@ -940,20 +973,27 @@ All configurable parameters live in `app_files/config.py` (406 lines). Here are 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `MULTI_STOCK_MODE` | `True` | Enable portfolio mode |
-| `MAX_POSITIONS` | 2 | Max simultaneous trades (optimized from 5) |
+| `MAX_POSITIONS` | 1 | Max simultaneous trades (optimized: 1 concentrates capital best) |
 | `MAX_STOCKS_TO_SCAN` | 20 | Stocks to scan from NIFTY 50 |
 | `MIN_ALLOCATION_PCT` | 10% | Min capital per stock |
-| `MAX_ALLOCATION_PCT` | 40% | Max capital per stock |
-| `MIN_CONFIDENCE_SCORE` | 0.40 | Min score to trade |
+| `MAX_ALLOCATION_PCT` | 60% | Max capital per stock (raised from 40% for concentration) |
+| `MIN_CONFIDENCE_SCORE` | 0.55 | Min score to trade (raised from 0.40 for quality) |
 | `FOCUS_SYMBOLS` | 11 stocks | Fallback: INDUSINDBK, TCS, INFY, NESTLEIND, SBILIFE, etc. |
 | `EXCLUDED_SYMBOLS` | 11 stocks | ICICIBANK, BRITANNIA, DRREDDY, BAJAJFINSV, etc. |
 
 ### Entry Filters
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `USE_DYNAMIC_ATR_BUFFER` | `True` | ATR-based trigger buffer (0.15 × ATR) |
-| `USE_VOLUME_FILTER` | `True` | Require volume confirmation (1.0× avg) |
+| `USE_DYNAMIC_ATR_BUFFER` | `True` | ATR-based trigger buffer (regime-aware) |
+| `USE_DYNAMIC_ATR_REGIME` | `True` | Select ATR multiplier by opening range width |
+| `ATR_MULTIPLIER_TIGHT_RANGE` | 0.30 | Tight range (<0.5%): need stronger conviction |
+| `ATR_MULTIPLIER_NORMAL_RANGE` | 0.15 | Normal range (0.5-1.0%): standard buffer |
+| `ATR_MULTIPLIER_WIDE_RANGE` | 0.08 | Wide range (>1.0%): smaller buffer is meaningful |
+| `USE_VOLUME_FILTER` | `True` | Require volume confirmation |
+| `SOFT_CUTOFF_VOL_MULTIPLIER` | 2.5 | Volume multiplier required in soft window |
 | `USE_NIFTY_FILTER` | `True` | Check NIFTY 50 alignment |
+| `USE_NIFTY_REGIME_SIZING` | `True` | Adjust position size by NIFTY market regime |
+| `NIFTY_DOWNTREND_SKIP_LONG_IN_SOFT` | `True` | Skip LONGs in soft cutoff when NIFTY bearish |
 | `USE_TREND_FILTER` | `True` | 15-min VWAP trend check |
 | `USE_GAP_FILTER` | `True` | Gap direction filter |
 | `USE_OPEN_POSITION_FILTER` | `True` | Candle structure filter |
@@ -965,20 +1005,24 @@ All configurable parameters live in `app_files/config.py` (406 lines). Here are 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `PRIMARY_ENTRY_START` | 09:30 | Primary window opens |
-| `PRIMARY_ENTRY_END` | 10:30 | Primary window closes (optimized from 10:15) |
-| `SOFT_CUTOFF_START` | 10:15 | Soft cutoff starts (needs 2x volume) |
-| `SOFT_CUTOFF_END` | 10:30 | Soft cutoff ends |
-| `NO_ENTRY_AFTER` | 10:30 | Hard stop for new entries |
+| `PRIMARY_ENTRY_END` | 09:50 | Primary window closes (optimized: peak WR 52-55%) |
+| `SOFT_CUTOFF_START` | 09:50 | Soft cutoff starts (needs 2.5× volume) |
+| `SOFT_CUTOFF_END` | 10:15 | Soft cutoff ends |
+| `NO_ENTRY_AFTER` | 10:15 | Hard stop for new entries (was 10:30, late entries have 35-38% WR) |
 
 ### Exit Strategy (25/20/55 Split)
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `PARTIAL_BOOKING_FIRST_CLOSE_PCT` | 25% | Exit at 1.0R |
 | `PARTIAL_BOOKING_FIRST_TARGET_R` | 1.0R | First target (optimized from 0.75R) |
-| `PARTIAL_BOOKING_SECOND_CLOSE_PCT` | 20% | Exit at 1.0R + SL → breakeven |
+| `PARTIAL_BOOKING_SECOND_CLOSE_PCT` | 20% | Exit at 1.0R + progressive SL |
 | `PARTIAL_BOOKING_EOD_CLOSE_PCT` | 55% | Runner — exit at 2.5R or 3:25 PM |
 | `PROFIT_TARGET_RATIO` | 2.5R | Final target (optimized from 2.0R) |
 | `STOPLOSS_DISTANCE_FACTOR` | 1.0 | Full range SL (optimized from 0.75) |
+| `SL_BREATHING_ROOM_FACTOR` | 1.25 | 25% extra cushion beyond calculated SL |
+| `USE_PROGRESSIVE_SL` | `True` | Gradual SL tightening after partial exits |
+| `PROGRESSIVE_SL_STAGE1_FACTOR` | 0.25 | At Stage 1: keep 25% risk below entry |
+| `PROGRESSIVE_SL_STAGE2_FACTOR` | -0.10 | At Stage 2: SL 10% of risk above entry (profit locked) |
 | `ATR_TRAIL_MULTIPLIER` | 1.2 | ATR trailing distance |
 | `ATR_TRAIL_START_R` | 1.5R | Start trailing after 1.5R |
 
